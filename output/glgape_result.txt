@@ -1,0 +1,42 @@
+Stop time = 1136
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1023
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1223
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1071
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1150
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1260
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1243
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1071
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1248
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1128
+Pred best = 8, True best = 8, Correct = 1
+Algo = glgape, Runs = 10, Avg stop time = 1155.300000, Success rate = 1.000000
+Stop time = 1136
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1023
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1223
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1071
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1150
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1260
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1243
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1071
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1248
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1128
+Pred best = 8, True best = 8, Correct = 1
+Algo = glgape, Runs = 10, Avg stop time = 1155.300000, Success rate = 1.000000

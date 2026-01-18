@@ -1,0 +1,105 @@
+Stop time = 2018
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1945
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1855
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2059
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1991
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1922
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1928
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2097
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2001
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2027
+Pred best = 8, True best = 8, Correct = 1
+Algo = hybrid, Runs = 10, Avg stop time = 1984.300000, Success rate = 1.000000
+Stop time = 1913
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2211
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2260
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2186
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2067
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2326
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2087
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2197
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 1983
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 2332
+Pred best = 8, True best = 8, Correct = 1
+Algo = hybrid, Runs = 10, Avg stop time = 2156.200000, Success rate = 1.000000
+Stop time = 7521
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 7585
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 7057
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 6387
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 6425
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 8973
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 7034
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 7065
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 6008
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 8500
+Pred best = 8, True best = 8, Correct = 1
+Algo = hybrid, Runs = 10, Avg stop time = 7255.500000, Success rate = 1.000000
+Stop time = 4173
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 5047
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 4924
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 4668
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 4374
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 5203
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 5073
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 4674
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 4889
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 4652
+Pred best = 8, True best = 8, Correct = 1
+Algo = hybrid, Runs = 10, Avg stop time = 4767.700000, Success rate = 1.000000
+Stop time = 3339
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 3558
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 3348
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 3287
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 3910
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 3084
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 3190
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 3902
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 3223
+Pred best = 8, True best = 8, Correct = 1
+Stop time = 3584
+Pred best = 8, True best = 8, Correct = 1
+Algo = hybrid, Runs = 10, Avg stop time = 3442.500000, Success rate = 1.000000

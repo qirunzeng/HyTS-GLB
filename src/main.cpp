@@ -1,0 +1,207 @@
+#include <iostream>
+#include <string>
+#include <unordered_map>
+#include <cstdlib>
+#include <iomanip>
+
+#include "rng.h"
+#include "instance.h"
+#include "hybrid_bai.h"
+#include "baseline_glgape.h"
+
+static bool has(const std::unordered_map<std::string,std::string>& mp, const std::string& k) {
+    return mp.find(k)!=mp.end();
+}
+static std::string get(const std::unordered_map<std::string,std::string>& mp, const std::string& k, const std::string& def) {
+    auto it=mp.find(k);
+    return (it==mp.end())?def:it->second;
+}
+static int geti(const std::unordered_map<std::string,std::string>& mp, const std::string& k, int def) {
+    return has(mp,k)?std::stoi(mp.at(k)):def;
+}
+static double getd(const std::unordered_map<std::string,std::string>& mp, const std::string& k, double def) {
+    return has(mp,k) ? std::stod(mp.at(k)) : def;
+}
+
+static void usage() {
+    std::cerr <<
+R"(Usage:
+  # Generate instance
+  glb_bai --mode gen --out instance.txt --K 10 --d 5 --S 2.0 --seed 1
+
+  # Run Hybrid (default)
+  glb_bai --mode run --algo hybrid --load instance.txt --delta 0.05 --max_steps 20000 --duel_prob 0.5 --seed 2
+
+  # Run GLGapE baseline
+  glb_bai --mode run --algo glgape --load instance.txt --delta 0.05 --eps 0.1 --seed 2
+
+  # Multiple trials
+  glb_bai --mode run --algo glgape --load instance.txt --runs 50 --delta 0.05 --eps 0.1 --seed 123
+
+Common options:
+  --mode gen|run
+  --seed, --runs
+
+Instance options (gen):
+  --K, --d, --S, --out
+
+Hybrid options (run, --algo hybrid):
+  --delta, --max_steps, --duel_prob
+  --Rs_c, --Rs_d, --zeta_c, --zeta_d, --lambda
+  --tstar_samples
+
+GLGapE options (run, --algo glgape):
+  --delta, --eps
+  --E
+  --alpha
+  --c_mu, --k_mu
+  --downscale_C (0/1), --C_scale
+)";
+}
+
+int main(int argc, char** argv) {
+    std::unordered_map<std::string,std::string> mp;
+    for (int i = 1; i < argc; ++i) {
+        std::string key = argv[i];
+        if (key.rfind("--",0) == 0) {
+            std::string val="1";
+            if (i + 1 < argc && std::string(argv[i+1]).rfind("--", 0) != 0) {
+                val = std::string(argv[i+1]);
+                ++i;
+            }
+            mp[key] = val;
+        }
+    }
+
+    std::string mode = get(mp, "--mode", "");
+    if (mode.empty()) { usage(); return 1; }
+
+    uint64_t seed = (uint64_t)std::stoull(get(mp, "--seed", "1"));
+    RNG rng(seed);
+
+    if (mode == "gen") {
+        int K = geti(mp, "--K", 10);
+        int d = geti(mp, "--d", 2);
+        double S = getd(mp, "--S", 2.0);
+        std::string out = get(mp, "--out", "instance.txt");
+
+        Instance inst = generate_synthetic_instance(K, d, S, rng);
+        save_instance(inst, out);
+
+        std::cout << "Generated instance to: " << out << "\n";
+        std::cout << "True best arm = " << inst.true_best_arm() << "\n";
+        return 0;
+    }
+
+    if (mode == "run") {
+        std::string path = get(mp, "--load", "");
+        if (path.empty()) { std::cerr << "--load is required in run mode\n"; return 1; }
+
+        Instance inst = load_instance(path);
+        std::string algo = get(mp, "--algo", "hybrid");
+        int runs = geti(mp, "--runs", 1);
+
+        std::cout << "i^star: " << inst.true_best_arm() << "\n";
+        for (int i = 0; i < inst.K; ++i) {
+            double dotp = dot(inst.x[i], inst.theta_star);
+            std::cout << "Arm " << i << ": x_i^T theta* = " << dotp << "\n";
+        }
+
+        if (algo == "hybrid") {
+            HybridConfig cfg;
+            cfg.delta = getd(mp, "--delta", 0.05);
+            cfg.max_steps = geti(mp, "--max_steps", 20000);
+            cfg.duel_prob = getd(mp, "--duel_prob", 0.5);
+
+            cfg.Rs_c = getd(mp, "--Rs_c", 1.0);
+            cfg.Rs_d = getd(mp, "--Rs_d", 1.0);
+            cfg.zeta_c = getd(mp, "--zeta_c", 1.0);
+            cfg.zeta_d = getd(mp, "--zeta_d", 1.0);
+            cfg.lambda = getd(mp, "--lambda", 1e-6);
+
+            cfg.classic_only = (geti(mp, "--classic_only", 0) != 0);
+            cfg.duel_only = (geti(mp, "--duel_only", 0) != 0);
+
+            cfg.tstar_samples = geti(mp, "--tstar_samples", 2000);
+
+            double Tstar = approx_T_star(inst, cfg, rng);
+            std::cout << std::fixed << std::setprecision(6);
+            std::cout << "Approx T*(theta*) = " << Tstar << "\n";
+
+            long long sumT = 0;
+            int succ = 0;
+
+
+            std::ofstream out("../output/hybrid_result.txt", std::ios::app);
+            out << std::fixed << std::setprecision(6);
+
+            for (int r = 0; r < runs; ++r) {
+                std::cout << "Run " << (r + 1) << "/" << runs << "\n";
+                RNG rrng(seed + 10007ull * (uint64_t)r + 17ull);
+                RunSummary rs = run_one(inst, cfg, rrng);
+                sumT += rs.stop_time;
+                succ += (rs.correct ? 1 : 0);
+
+                out << "Stop time = " << rs.stop_time << "\n";
+                out << "Pred best = " << rs.pred_best << ", True best = " << rs.true_best
+                          << ", Correct = " << (rs.correct ? 1 : 0) << "\n";
+            }
+            out << "Algo = hybrid"
+                      << ", Runs = " << runs
+                      << ", Avg stop time = " << (double)sumT / (double)runs
+                      << ", Success rate = " << (double)succ / (double)runs
+                      << "\n";
+            out.close();
+            return 0;
+        }
+
+        if (algo == "glgape") {
+            GLGapEConfig cfg;
+            cfg.delta = getd(mp, "--delta", 0.05);
+            cfg.eps   = getd(mp, "--eps", 0.1);
+
+            cfg.E     = geti(mp, "--E", -1);
+            cfg.alpha = getd(mp, "--alpha", -1.0);
+            cfg.c_mu  = getd(mp, "--c_mu", 1e-3);
+            cfg.k_mu  = getd(mp, "--k_mu", 0.25);
+
+            cfg.downscale_C = (geti(mp, "--downscale_C", 0) != 0);
+            cfg.C_scale = getd(mp, "--C_scale", 1.0);
+
+            long long sumT = 0;
+            int succ = 0;
+
+
+            std::ofstream out("../output/glgape_result.txt", std::ios::app);
+            out << std::fixed << std::setprecision(6);
+
+            for (int r = 0; r < runs; ++r) {
+                std::cout << "Run " << (r + 1) << "/" << runs << "\n";
+                RNG rrng(seed + 10007ull * (uint64_t)r + 17ull); // rrng 是
+                GLGapEResult rs = run_glgape_baseline(inst, cfg, rrng);
+                sumT += rs.stop_t;
+                succ += (rs.correct ? 1 : 0);
+
+                out << "Stop time = " << rs.stop_t << "\n";
+                out << "Pred best = " << rs.hat_arm << ", True best = " << inst.true_best_arm()
+                          << ", Correct = " << (rs.correct ? 1 : 0) << "\n";
+            }
+
+            out << "Algo = glgape"
+                      << ", Runs = " << runs
+                      << ", Avg stop time = " << (double)sumT / (double)runs
+                      << ", Success rate = " << (double)succ / (double)runs
+                      << "\n";
+            out.close();
+            return 0;
+        }
+
+        std::cerr << "Unknown --algo: " << algo << "\n";
+        usage();
+        return 1;
+    }
+
+    std::cerr << "Unknown --mode: " << mode << "\n";
+    usage();
+    return 1;
+}
