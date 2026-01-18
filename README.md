@@ -79,19 +79,24 @@ You should see `glb_bai` in `build/`.
 ### 2) Run the algorithm (single trial)
 
 ```bash
-./glb_bai --mode run --load instance.txt --delta 0.05 --max_steps 20000 --duel_prob 0.5 --seed 2
+./glb_bai --mode run --load instance.txt --delta 0.05 --max_steps 20000 --seed 2
 ```
 
 ### 3) Run multiple trials (average stopping time + success rate)
 
 ```bash
-./glb_bai --mode run --load instance.txt --delta 0.05 --max_steps 20000 --duel_prob 0.5 --runs 10 --seed 123
+./glb_bai --mode run --load instance.txt --delta 0.05 --max_steps 20000 --runs 10 --seed 123
 ```
 
 ### 4) Baseline:
 
 ```bash
- ./glb_bai --mode run --algo glgape --load instance.txt  --max_steps 20000 --delta 0.05 --eps 0.0 --seed 2 --runs 10
+./glb_bai --mode run --algo glgape --load instance.txt  --max_steps 20000 --delta 0.05 --eps 0.0 --seed 2 --runs 10
+```
+
+
+```bash
+./glb_bai --mode run --algo random --load instance.txt --delta 0.05 --max_steps 20000 --runs 10 --seed 123
 ```
 
 ## Main parameters

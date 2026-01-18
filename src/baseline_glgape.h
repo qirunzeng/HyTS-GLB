@@ -165,10 +165,8 @@ struct GLGapEConfig {
     // warm-up length E; if <0: E = min(K, 3d)
     int E = -1;
 
-    // Ct multiplier α. If <0, we use α=1 (safe default unless you compute theory constants)
     double alpha = -1.0;
 
-    // bounds for mu'(z) on the domain: c_mu <= mu'(z) <= k_mu
     // logistic has k_mu=1/4; c_mu depends on bounded |x^T theta|
     double c_mu = 1e-3;
     double k_mu = 0.25;
@@ -306,71 +304,70 @@ inline GLGapEResult run_glgape_baseline(
         T[a] += 1;
     }
 
-    int a_pick = -1;
     std::vector<double> w;
+
+
     for (int t = (int)data.size() + 1; t <= cfg.max_steps; ++t) {
         if (t % 500 == 0) {
             std::cout << "Step: " << t << "\n";
         }
 
-        if (t % 100 == 0 || a_pick < 0) {
-            Vec theta_hat = constrained_mle_logistic(
-                data, d, inst.S,
-                1.0, 1.0,
-                cfg.mle_cfg
-            );
+        Vec theta_hat = constrained_mle_logistic(
+            data, d, inst.S,
+            1.0, 1.0,
+            cfg.mle_cfg
+        );
 
-            Mat M = compute_M_from_data(inst, data, cfg.ridge);
+        Mat M = compute_M_from_data(inst, data, cfg.ridge);
 
-            int it = argmax_mean(inst, theta_hat);
+        int it = argmax_mean(inst, theta_hat);
 
-            double Ct = Ct_value(t, cfg, d);
+        double Ct = Ct_value(t, cfg, d);
 
-            int jt = -1;
-            double Bt = -std::numeric_limits<double>::infinity();
-            Vec y_t(d, 0.0);
+        int jt = -1;
+        double Bt = -std::numeric_limits<double>::infinity();
+        Vec y_t(d, 0.0);
 
-            double zi = dot(inst.x[it], theta_hat);
-            double mui = mu(zi);
+        double zi = dot(inst.x[it], theta_hat);
+        double mui = mu(zi);
 
-            for (int j = 0; j < K; ++j) if (j != it) {
-                double zj = dot(inst.x[j], theta_hat);
-                double muj = mu(zj);
-                double delta_hat = muj - mui;
+        for (int j = 0; j < K; ++j) if (j != it) {
+            double zj = dot(inst.x[j], theta_hat);
+            double muj = mu(zj);
+            double delta_hat = muj - mui;
+            double beta_ij = 0.0;
+            Vec ytmp(d, 0.0);
+            beta_and_y(inst, theta_hat, M, cfg, it, j, Ct, beta_ij, ytmp);
 
-                double beta_ij = 0.0;
-                Vec ytmp(d, 0.0);
-                beta_and_y(inst, theta_hat, M, cfg, it, j, Ct, beta_ij, ytmp);
-
-                double Bcand = delta_hat + beta_ij;
-                if (Bcand > Bt) { 
-                    Bt = Bcand; 
-                    jt = j; 
-                    y_t = ytmp; 
-                }
+            double Bcand = delta_hat + beta_ij;
+            if (Bcand > Bt) { 
+                Bt = Bcand; 
+                jt = j; 
+                y_t = ytmp; 
             }
-
-            if (jt < 0) {
-                // fallback: should not happen
-                GLGapEResult res;
-                res.hat_arm = it;
-                res.stop_t = (int)data.size();
-                res.correct = (res.hat_arm == inst.true_best_arm());
-                return res;
-            }
-
-            // 4) stopping rule
-            if (Bt <= cfg.eps) {
-                GLGapEResult res;
-                res.hat_arm = it;
-                res.stop_t = (int)data.size();
-                res.correct = (res.hat_arm == inst.true_best_arm());
-                return res;
-            }
-
-            // 5) select-arm: solve min ||w||_1 s.t. X w = y_t, convert to p, tracking
-            solve_l1_min_w(inst, y_t, w);
         }
+        
+
+        if (jt < 0) {
+            // fallback: should not happen
+            GLGapEResult res;
+            res.hat_arm = it;
+            res.stop_t = (int)data.size();
+            res.correct = (res.hat_arm == inst.true_best_arm());
+            return res;
+        }
+
+        // 4) stopping rule
+        if (Bt <= cfg.eps) {
+            GLGapEResult res;
+            res.hat_arm = it;
+            res.stop_t = (int)data.size();
+            res.correct = (res.hat_arm == inst.true_best_arm());
+            return res;
+        }
+
+        // 5) select-arm: solve min ||w||_1 s.t. X w = y_t, convert to p, tracking
+        solve_l1_min_w(inst, y_t, w);
 
         std::vector<double> p(K, 0.0);
         double s = 0.0;
@@ -378,7 +375,7 @@ inline GLGapEResult run_glgape_baseline(
             s += std::fabs(w[a]);
         }
 
-        a_pick = -1;
+        int a_pick = -1;
         if (s <= 1e-12) {
             a_pick = rng.randint(0, K - 1);
         } else {
@@ -387,9 +384,14 @@ inline GLGapEResult run_glgape_baseline(
             double best_ratio = std::numeric_limits<double>::infinity();
             for (int a = 0; a < K; ++a) if (p[a] > 1e-12) {
                 double ratio = (double)T[a] / p[a];
-                if (ratio < best_ratio) { best_ratio = ratio; a_pick = a; }
+                if (ratio < best_ratio) {
+                    best_ratio = ratio;
+                    a_pick = a;
+                }
             }
-            if (a_pick < 0) a_pick = rng.randint(0, K - 1);
+            if (a_pick < 0) {
+                a_pick = rng.randint(0, K - 1);
+            }
         }
 
         int r01 = sample_classic_reward(inst, a_pick, rng);
