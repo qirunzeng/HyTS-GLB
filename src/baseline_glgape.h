@@ -5,9 +5,10 @@
 #include <stdexcept>
 #include <algorithm>
 
-// Reuse your project infrastructure (Instance, RNG, lin_alg, logistic link, Obs + constrained MLE,
-// and sampling routine sample_classic_reward).
-#include "hybrid_bai.h"   // includes: lin_alg.h, rng.h, instance.h, mle.h, glm_logistic.h
+#include "env.h"
+#include "rng.h"
+#include "instance.h"
+#include "mle.h"
 
 // ============================================================================
 // GLGapE baseline (Kazerouni & Wein style) for Logistic GLM bandits
@@ -32,7 +33,7 @@ struct SimplexEq {
     std::vector<double> c;              // n
     std::vector<double> x;              // n solution
 
-    bool solve(double M = 1e6, int maxit = 20000, double eps = 1e-10) {
+    bool solve(double M = 1e6, int maxit = 20000, double eps = 1e-6) {
         // Tableau with artificials: n + m variables
         int N = n + m;
         std::vector<std::vector<double>> T(m + 1, std::vector<double>(N + 1, 0.0));
@@ -51,11 +52,9 @@ struct SimplexEq {
             basis[i] = n + i;
         }
 
-        // objective row: original + M * artificials
         for (int j = 0; j < n; ++j) T[m][j] = c[j];
         for (int j = n; j < N; ++j) T[m][j] = M;
 
-        // canonicalize w.r.t. artificial basis
         for (int i = 0; i < m; ++i) {
             double coeff = T[m][basis[i]];
             if (std::fabs(coeff) > 0) {
@@ -77,7 +76,6 @@ struct SimplexEq {
         };
 
         for (int it = 0; it < maxit; ++it) {
-            // entering: most negative reduced cost
             int s = -1;
             double best = -eps;
             for (int j = 0; j < N; ++j) {
@@ -85,7 +83,6 @@ struct SimplexEq {
             }
             if (s < 0) break; // optimal
 
-            // leaving: min ratio
             int r = -1;
             double minratio = std::numeric_limits<double>::infinity();
             for (int i = 0; i < m; ++i) {
@@ -100,7 +97,6 @@ struct SimplexEq {
             pivot(r, s);
         }
 
-        // extract solution for original vars
         x.assign(n, 0.0);
         for (int i = 0; i < m; ++i) {
             int var = basis[i];
@@ -165,6 +161,8 @@ struct GLGapEConfig {
     // warm-up length E; if <0: E = min(K, 3d)
     int E = -1;
 
+    double kappa = -1.0;
+
     double alpha = -1.0;
 
     // logistic has k_mu=1/4; c_mu depends on bounded |x^T theta|
@@ -191,20 +189,111 @@ struct GLGapEResult {
     bool correct = false;
 };
 
-// -------------------- Internal helpers --------------------
 
-inline void mat_add_inplace(Mat& A, const Mat& B) {
-    if (A.n != B.n) throw std::runtime_error("mat_add_inplace dim mismatch");
-    for (int i = 0; i < A.n * A.n; ++i) A.a[(size_t)i] += B.a[(size_t)i];
+#pragma once
+#include <cmath>
+#include <stdexcept>
+#include <algorithm>
+#include "lin_alg.h"
+
+// Power iteration to get lambda_max(M) for SPD M
+// returns an estimate of largest eigenvalue
+inline double lambda_max_spd_power(const Mat& M, int max_iter = 500, double tol = 1e-12) {
+    const int n = M.n;
+    if (n <= 0) throw std::runtime_error("lambda_max_spd_power: empty matrix");
+    Vec v(n, 0.0);
+    for (int i = 0; i < n; ++i) v[i] = 1.0 / std::sqrt((double)n); // deterministic init
+
+    double lambda = 0.0;
+    for (int it = 0; it < max_iter; ++it) {
+        Vec w = mat_vec(M, v);
+        double nw = w.norm2();
+        if (nw <= 1e-18) throw std::runtime_error("lambda_max_spd_power: numerical breakdown");
+        for (int i = 0; i < n; ++i) w[i] /= nw;
+
+        // Rayleigh quotient on normalized vector
+        Vec Mw = mat_vec(M, w);
+        double lambda_new = dot(w, Mw);
+
+        if (std::fabs(lambda_new - lambda) <= tol * std::max(1.0, std::fabs(lambda_new))) {
+            lambda = lambda_new;
+            break;
+        }
+        lambda = lambda_new;
+        v = w;
+    }
+    return lambda;
 }
 
-inline Mat compute_M_from_data(const Instance& inst, const std::vector<Obs>& data, double ridge) {
+// Inverse power iteration to get lambda_min(M) for SPD M
+// Uses your solve_spd_cholesky(M, .) as an implicit M^{-1} multiply.
+inline double lambda_min_spd_inv_power(const Mat& M, int max_iter = 500, double tol = 1e-12) {
+    const int n = M.n;
+    if (n <= 0) throw std::runtime_error("lambda_min_spd_inv_power: empty matrix");
+
+    // deterministic init
+    Vec v(n, 0.0);
+    for (int i = 0; i < n; ++i) v[i] = 1.0 / std::sqrt((double)n);
+
+    double lambda_min = 0.0;
+    for (int it = 0; it < max_iter; ++it) {
+        // w = M^{-1} v
+        Vec w = solve_spd_cholesky(M, v);
+
+        double nw = w.norm2();
+        if (nw <= 1e-18) {
+            throw std::runtime_error("lambda_min_spd_inv_power: numerical breakdown (nw ~ 0)");
+        }
+        for (int i = 0; i < n; ++i) w[i] /= nw;
+
+        // Rayleigh quotient gives eigenvalue estimate for M along direction w:
+        // lambda(w) = (w^T M w) / (w^T w); here w normalized so denom=1.
+        Vec Mw = mat_vec(M, w);
+        double lambda_new = dot(w, Mw);
+
+        if (lambda_new <= 0.0) {
+            throw std::runtime_error("lambda_min_spd_inv_power: M not SPD (lambda_new <= 0)");
+        }
+
+        if (std::fabs(lambda_new - lambda_min) <= tol * std::max(1.0, std::fabs(lambda_new))) {
+            lambda_min = lambda_new;
+            break;
+        }
+        lambda_min = lambda_new;
+        v = w;
+    }
+
+    if (lambda_min <= 0.0) throw std::runtime_error("lambda_min_spd_inv_power: failed (lambda_min<=0)");
+    return lambda_min;
+}
+
+// Compute kappa with L=1, first computing lambda0 = lambda_min(M)
+// kappa = sqrt(3 + 2 log(1 + 2 / lambda0))
+inline double compute_kappa_L1_from_M(const Mat& M) {
+    double lambda0 = lambda_min_spd_inv_power(M);
+    if (lambda0 <= 0.0) throw std::runtime_error("compute_kappa: lambda0 must be positive");
+
+    // L = 1 -> 2 L^2 = 2
+    return std::sqrt(3.0 + 2.0 * std::log(1.0 + 2.0 / lambda0));
+}
+
+// -------------------- Internal helpers --------------------
+
+inline void mat_add_inplace(Mat& A, const Mat& B, int cnt = 1) {
+    if (A.n != B.n) throw std::runtime_error("mat_add_inplace dim mismatch");
+    for (int i = 0; i < A.n * A.n; ++i) {
+        A.a[(size_t)i] += B.a[(size_t)i] * cnt;
+    }
+}
+
+inline Mat compute_M_from_data(const Instance& inst, double ridge, std::vector<int> T) {
     int d = inst.d;
     Mat M(d, 0.0);
-    for (const auto& ob : data) {
-        if (ob.is_duel) continue; // baseline uses classic only
-        mat_add_inplace(M, outer(inst.x[ob.i]));
+
+    for (int i = 0; i < inst.K; ++i) {
+        mat_add_inplace(M, outer(inst.x[i]), T[i]);
     }
+
     for (int i = 0; i < d; ++i) M(i,i) += ridge;
     return M;
 }
@@ -214,15 +303,14 @@ inline double quadform_Minv(const Mat& M, const Vec& y) {
     return dot(y, x);
 }
 
+const double pi = 3.14159265358979323846;
+
 inline double Ct_value(int t, const GLGapEConfig& cfg, int d) {
     // Conservative, monotone Ct(t). (Matches typical GLM-BAI choices.)
-    const double pi = 3.14159265358979323846;
-    double alpha = (cfg.alpha < 0.0) ? 1.0 : cfg.alpha;
-
     int tt = std::max(2, t);
     double inside = (pi * pi * (double)d * (double)tt * (double)tt) / (6.0 * cfg.delta);
     double val = std::sqrt(std::max(0.0, 2.0 * (double)d * std::log((double)tt) * std::log(inside)));
-    double C = alpha * val;
+    double C = cfg.alpha * val;
     if (cfg.downscale_C) C *= cfg.C_scale;
     return C;
 }
@@ -271,10 +359,10 @@ inline void beta_and_y(
 }
 
 // -------------------- Main baseline runner --------------------
-// Uses only classic pulls; dueling is ignored for this baseline.
+// Uses only reward pulls; dueling is ignored for this baseline.
 inline GLGapEResult run_glgape_baseline(
-    const Instance& inst,
-    const GLGapEConfig& cfg,
+    Instance& inst,
+    GLGapEConfig& cfg,
     RNG& rng
 ) {
     int K = inst.K;
@@ -285,40 +373,45 @@ inline GLGapEResult run_glgape_baseline(
     E = std::max(1, E);
 
     // data and counts
-    std::vector<Obs> data;
-    data.reserve((size_t)cfg.max_steps + 10);
     std::vector<int> T(K, 0);
 
+
+    std::vector<std::vector<int>> r01s(inst.K, std::vector<int> (2, 0));
+    std::vector<std::vector<std::vector<int>>> y01s(inst.K, std::vector<std::vector<int>> (inst.K, std::vector<int>(2, 0)));
+
     // warm-up: random arms
-    for (int t = 0; t < E && (int)data.size() < cfg.max_steps; ++t) {
-        int a = rng.randint(0, K - 1);
-        int r01 = sample_classic_reward(inst, a, rng);
+    for (int t = 0; t < E && t < cfg.max_steps; ++t) {
+        int arm = t % K;
 
-        Obs ob;
-        ob.is_duel = false;
-        ob.i = a;
-        ob.r01 = r01;
-        ob.feat = inst.x[a];
-        data.push_back(ob);
-
-        T[a] += 1;
+        r01s[arm][sample_reward(inst, arm, rng)]++;
+        T[arm] += 1;
     }
+
+    Mat M = compute_M_from_data(inst, cfg.ridge, T);
+    cfg.kappa = compute_kappa_L1_from_M(M);
+    cfg.alpha = 2 * cfg.kappa * 1 / cfg.c_mu;
 
     std::vector<double> w;
 
+    Vec theta_hat(inst.d, 0.0);
 
-    for (int t = (int)data.size() + 1; t <= cfg.max_steps; ++t) {
+    
+
+    int t;
+    for (t = E + 1; t <= cfg.max_steps; ++t) {
         if (t % 500 == 0) {
             std::cout << "Step: " << t << "\n";
         }
 
-        Vec theta_hat = constrained_mle_logistic(
-            data, d, inst.S,
+        theta_hat = constrained_mle_logistic(
+            r01s, y01s, d, inst.S,
             1.0, 1.0,
-            cfg.mle_cfg
+            cfg.mle_cfg,
+            theta_hat,
+            inst
         );
 
-        Mat M = compute_M_from_data(inst, data, cfg.ridge);
+        M = compute_M_from_data(inst, cfg.ridge, T);
 
         int it = argmax_mean(inst, theta_hat);
 
@@ -347,21 +440,24 @@ inline GLGapEResult run_glgape_baseline(
             }
         }
         
-
         if (jt < 0) {
             // fallback: should not happen
             GLGapEResult res;
             res.hat_arm = it;
-            res.stop_t = (int)data.size();
+            res.stop_t = t;
             res.correct = (res.hat_arm == inst.true_best_arm());
             return res;
         }
 
         // 4) stopping rule
+        
+        if (t % 500 == 0) {
+            std::cout << Bt << std::endl;
+        }
         if (Bt <= cfg.eps) {
             GLGapEResult res;
             res.hat_arm = it;
-            res.stop_t = (int)data.size();
+            res.stop_t = t;
             res.correct = (res.hat_arm == inst.true_best_arm());
             return res;
         }
@@ -375,9 +471,9 @@ inline GLGapEResult run_glgape_baseline(
             s += std::fabs(w[a]);
         }
 
-        int a_pick = -1;
+        int arm = -1;
         if (s <= 1e-12) {
-            a_pick = rng.randint(0, K - 1);
+            arm = rng.randint(0, K - 1);
         } else {
             for (int a = 0; a < K; ++a) p[a] = std::fabs(w[a]) / s;
 
@@ -386,32 +482,21 @@ inline GLGapEResult run_glgape_baseline(
                 double ratio = (double)T[a] / p[a];
                 if (ratio < best_ratio) {
                     best_ratio = ratio;
-                    a_pick = a;
+                    arm = a;
                 }
             }
-            if (a_pick < 0) {
-                a_pick = rng.randint(0, K - 1);
+            if (arm < 0) {
+                arm = rng.randint(0, K - 1);
             }
         }
 
-        int r01 = sample_classic_reward(inst, a_pick, rng);
-
-        Obs ob;
-        ob.is_duel = false;
-        ob.i = a_pick;
-        ob.r01 = r01;
-        ob.feat = inst.x[a_pick];
-        data.push_back(ob);
-
-        T[a_pick] += 1;
+        r01s[arm][sample_reward(inst, arm, rng)]++;
+        T[arm] += 1;
     }
 
     GLGapEResult res;
-    Vec theta_hat = constrained_mle_logistic(
-        data, d, inst.S, 1.0, 1.0, cfg.mle_cfg
-    );
     res.hat_arm = argmax_mean(inst, theta_hat);
-    res.stop_t = (int)data.size();
+    res.stop_t = t;
     res.correct = (res.hat_arm == inst.true_best_arm());
     return res;
 }

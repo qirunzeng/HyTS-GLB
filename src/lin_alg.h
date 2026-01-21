@@ -136,15 +136,15 @@ inline Vec solve_spd_cholesky(const Mat& A, const Vec& b) {
     int n = A.n;
     std::vector<double> L(n*n, 0.0);
 
-    auto Lij = [&](int i,int j)->double& { return L[i*n+j]; };
-    auto Lijc = [&](int i,int j)->double { return L[i*n+j]; };
+    auto Lij  = [&](int i, int j) -> double& { return L[i*n+j]; };
+    auto Lijc = [&](int i, int j) -> double  { return L[i*n+j]; };
 
     // factorize A = L L^T
-    for (int i=0;i<n;++i) {
-        for (int j=0;j<=i;++j) {
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j <= i; ++j) {
             double s = A(i,j);
-            for (int k=0;k<j;++k) s -= Lijc(i,k) * Lijc(j,k);
-            if (i==j) {
+            for (int k = 0; k < j; ++k) s -= Lijc(i,k) * Lijc(j,k);
+            if (i == j) {
                 if (s <= 1e-14) throw std::runtime_error("Cholesky failed: not SPD / ill-conditioned");
                 Lij(i,j) = std::sqrt(s);
             } else {

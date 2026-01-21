@@ -5,9 +5,8 @@
 #include <iostream>
 #include "lin_alg.h"
 #include "rng.h"
-#include "instance.h"
 #include "mle.h"
-#include "glm_logistic.h"
+#include "env.h"
 
 // --- beta_t(delta) ---
 inline double beta_t(double delta, int d, double S, double L_t) {
@@ -48,22 +47,24 @@ struct RunSummary {
     bool correct = false;
 };
 
-inline Mat hessian_classic_only(const std::vector<Obs>& data, const Vec& theta_hat, int d, double zeta_c) {
-    Mat H(d, 0.0);
-    for (const auto& ob: data) if (!ob.is_duel) {
-        double z = dot(ob.feat, theta_hat);
+inline Mat hessian_classic_only(const std::vector<int> Nc, const Vec& theta_hat, double zeta_c, const Instance& inst) {
+    Mat H(inst.d, 0.0);
+    for (int i = 0; i < inst.K; ++i) {
+        double z = dot(inst.x[i], theta_hat);
         double w = mu_prime(z);
-        H = H + ((1.0/zeta_c) * w) * outer(ob.feat);
+        H = H + (1.0 * Nc[i] * (1.0/zeta_c) * w) * outer(inst.x[i]);
     }
     return H;
 }
 
-inline Mat hessian_duel_only(const std::vector<Obs>& data, const Vec& theta_hat, int d, double zeta_d) {
-    Mat H(d, 0.0);
-    for (const auto& ob: data) if (ob.is_duel) {
-        double z = dot(ob.feat, theta_hat);
-        double w = mu_prime(z);
-        H = H + ((1.0/zeta_d) * w) * outer(ob.feat);
+inline Mat hessian_duel_only(const std::vector<std::vector<int>> Nd, const Vec& theta_hat, double zeta_d, const Instance& inst) {
+    Mat H(inst.d, 0.0);
+    for (int j = 0; j < inst.K; ++j) {
+        for (int k = j+1; k < inst.K; ++k) {
+            double z = dot(inst.g[j][k], theta_hat);
+            double w = mu_prime(z);
+            H = H + (Nd[j][k] * (1.0/zeta_d) * w) * outer(inst.g[j][k]);
+        }
     }
     return H;
 }
@@ -82,7 +83,7 @@ inline Mat info_matrix_A(
 }
 
 inline int argmax_score(const std::vector<double>& v) {
-    int id=0;
+    int id = 0;
     for (int i = 1; i < (int)v.size(); ++i) if (v[i] > v[id]) {
         id = i;
     }
@@ -108,7 +109,8 @@ inline bool stop_condition(
     const Instance& inst,
     const Vec& theta_hat,
     const Mat& A,
-    double beta, bool printInfo=false
+    double beta, 
+    bool printInfo=false
 ) {
     int ihat = predicted_best_arm(inst, theta_hat);
 
@@ -119,9 +121,13 @@ inline bool stop_condition(
         double mean_gap = dot(g, theta_hat);
         double q = quad_form_inv_spd(A, g);
         double rad = std::sqrt(std::max(0.0, beta * q));
-        if (printInfo) std::cout << "  vs arm " << i << ": mean gap = " << mean_gap << ", rad = " << rad << "\n";
-        // if (!(mean_gap > rad)) return false;
-        if (!(mean_gap - rad > 1e-12)) ret = false;
+        if (printInfo) {
+            std::cout << "  vs arm " << i << ": mean gap = " << mean_gap << ", rad = " << rad << "\n";
+        }
+        if (!(mean_gap - rad > 1e-12)) {
+            ret = false;
+            break;
+        }
     }
     return ret;
 }
@@ -149,22 +155,6 @@ inline int worst_competitor(
     }
     if (worst < 0) worst = (ihat==0?1:0);
     return worst;
-}
-
-
-// simulate one classic Bernoulli reward
-inline int sample_classic_reward(const Instance& inst, int arm, RNG& rng) {
-    double z = dot(inst.x[arm], inst.theta_star);
-    double p = sigmoid(z);
-    return (rng.uniform01() < p) ? 1 : 0;
-}
-
-// simulate one dueling outcome y ~ Bernoulli(sigmoid((x_j-x_k)^T theta*))
-inline int sample_duel_outcome(const Instance& inst, int j, int k, RNG& rng) {
-    Vec g = inst.x[j] - inst.x[k];
-    double z = dot(g, inst.theta_star);
-    double p = sigmoid(z);
-    return (rng.uniform01() < p) ? 1 : 0;
 }
 
 
@@ -296,10 +286,9 @@ static void compute_optimal_proportions_track_stop(
         if (!cfg.reward_only) {
             for (int j = 0; j < K; ++j) {
                 for (int k = j + 1; k < K; ++k) {
-                    Vec g = inst.x[j] - inst.x[k];
-                    double z = dot(g, theta_hat);
+                    double z = dot(inst.g[j][k], theta_hat);
                     double curv = mu_prime(z) / cfg.zeta_d;
-                    double proj = dot(g, u);
+                    double proj = dot(inst.g[j][k], u);
                     double sd = curv * (proj * proj);
                     if (sd > sd_best) { 
                         sd_best = sd; 
@@ -340,36 +329,40 @@ static void compute_optimal_proportions_track_stop(
     }
 }
 
-inline RunSummary run_one(const Instance& inst, const HybridConfig& cfg, RNG& rng) {
+inline RunSummary run_one(Instance& inst, const HybridConfig& cfg, RNG& rng) {
     RunSummary out;
     out.true_best = inst.true_best_arm();
 
     std::vector<int> Nc(inst.K, 0);
     std::vector<std::vector<int>> Nd(inst.K, std::vector<int>(inst.K, 0));
 
-    std::vector<Obs> data;
-    data.reserve(cfg.max_steps);
 
     Vec theta_hat(inst.d, 0.0);
 
     std::vector<double> W_arm(inst.K, 0.0);
     std::vector<std::vector<double>> W_pair(inst.K, std::vector<double>(inst.K, 0.0));
 
+    
+    std::vector<std::vector<int>> r01s(inst.K, std::vector<int> (2, 0));
+    std::vector<std::vector<std::vector<int>>> y01s(inst.K, std::vector<std::vector<int>> (inst.K, std::vector<int>(2, 0)));
+
     int t = 0;
     
-    for (int t_c = 0; t <= cfg.max_steps; ++t) {
+    for (int t_c = 0; t < cfg.max_steps; ++t) {
 
-        if (t % 500 == 0) {
+        if (t % 5000 == 0) {
             std::cout << "Step: " << t << "\n";
+            for (int i = 0; i < inst.K; ++i) {
+                std::cout << Nc[i] << " \n"[i+1 == inst.K];
+            }
         }
+        theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
 
-        theta_hat = constrained_mle_logistic(data, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg);
-
-        Mat Hc = hessian_classic_only(data, theta_hat, inst.d, cfg.zeta_c);
-        Mat Hd = hessian_duel_only(data, theta_hat, inst.d, cfg.zeta_d);
+        Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
+        Mat Hd = hessian_duel_only(Nd, theta_hat, cfg.zeta_d, inst);
         Mat A  = info_matrix_A(Hc, Hd, inst.S, cfg.Rs_c, cfg.Rs_d) + Mat(inst.d, cfg.lambda);
 
-        double Lt = lipschitz_Lt_bernoulli(t_c, t-1 - t_c, inst.S);
+        double Lt = lipschitz_Lt_bernoulli(t_c, t - t_c, inst.S);
         double beta = beta_t(cfg.delta, inst.d, inst.S, Lt);
 
         if (t > inst.d && stop_condition(inst, theta_hat, A, beta)) {
@@ -389,54 +382,33 @@ inline RunSummary run_one(const Instance& inst, const HybridConfig& cfg, RNG& rn
             }
         }
 
-        int t_now = (int)data.size();
-
         int best_i = 0;
         double best_val = (double)Nc[0] - W_arm[0];
         for (int i = 1; i < inst.K; ++i) {
-            double v = (double)Nc[i] - W_arm[i];
-            if (v < best_val) { best_val = v; best_i = i; }
+            if (double v = (double)Nc[i] - W_arm[i]; v < best_val) { 
+                best_val = v; 
+                best_i = i;
+            }
         }
 
         int best_j = 0, best_k = 1;
         double best_duel_val = (double)Nd[0][1] - W_pair[0][1];
-        for (int j = 0; j < inst.K; ++j) {
-            for (int k = j + 1; k < inst.K; ++k) {
-                double v = (double)Nd[j][k] - W_pair[j][k];
-                if (v < best_duel_val) { 
-                    best_duel_val = v; best_j = j; best_k = k; 
-                }
+        for (int j = 0; j < inst.K; ++j) for (int k = j + 1; k < inst.K; ++k) {
+            if (double v = (double)Nd[j][k] - W_pair[j][k]; v < best_duel_val) { 
+                best_duel_val = v; 
+                best_j = j;
+                best_k = k;
             }
         }
 
         bool do_duel = (best_duel_val < best_val);
 
-        if (t_now < inst.d) do_duel = false;
-
         if (!do_duel) {
-            int arm = best_i;
-
-            int r01 = sample_classic_reward(inst, arm, rng);
-            Obs ob;
-            ob.is_duel = false;
-            ob.i = arm;
-            ob.r01 = r01;
-            ob.feat = inst.x[arm];
-            data.push_back(ob);
-
-            Nc[arm] += 1;
-            t_c += 1;
+            r01s[best_i][sample_reward(inst, best_i, rng)]++;
+            Nc[best_i]++; t_c++;
         } else {
-            int j = best_j, k = best_k;
-            int y01 = sample_duel_outcome(inst, j, k, rng);
-            Obs ob;
-            ob.is_duel = true;
-            ob.j = j; ob.k = k;
-            ob.y01 = y01;
-            ob.feat = inst.x[j] - inst.x[k];
-            data.push_back(ob);
-
-            Nd[j][k] += 1;
+            y01s[best_j][best_k][sample_duel_outcome(inst, best_j, best_k, rng)]++;
+            Nd[best_j][best_k]++;
         }
     }
 
@@ -447,14 +419,12 @@ inline RunSummary run_one(const Instance& inst, const HybridConfig& cfg, RNG& rn
 }
 
 
-inline RunSummary run_rand(const Instance& inst, const HybridConfig& cfg, RNG& rng) {
+inline RunSummary run_rand(Instance& inst, const HybridConfig& cfg, RNG& rng) {
     RunSummary out;
     out.true_best = inst.true_best_arm();
 
     std::vector<int> Nc(inst.K, 0);
 
-    std::vector<Obs> data;
-    data.reserve(cfg.max_steps);
 
     Vec theta_hat(inst.d, 0.0);
 
@@ -462,34 +432,36 @@ inline RunSummary run_rand(const Instance& inst, const HybridConfig& cfg, RNG& r
 
     int t = 0;
     
-    for (int t_c = 0; t <= cfg.max_steps; ++t) {
+    std::vector<std::vector<int>> r01s(inst.K, std::vector<int> (2, 0));
+    std::vector<std::vector<std::vector<int>>> y01s(inst.K, std::vector<std::vector<int>> (inst.K, std::vector<int>(2, 0)));
 
-        if (t % 500 == 0) {
+    for (int t_c = 0; t < cfg.max_steps; ++t) {
+
+        
+        if (t % 5000 == 0) {
             std::cout << "Step: " << t << "\n";
+            for (int i = 0; i < inst.K; ++i) {
+                std::cout << Nc[i] << " \n"[i+1 == inst.K];
+            }
         }
 
-        theta_hat = constrained_mle_logistic(data, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg);
+        theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
 
-        Mat Hc = hessian_classic_only(data, theta_hat, inst.d, cfg.zeta_c);
-        Mat Hd = hessian_duel_only(data, theta_hat, inst.d, cfg.zeta_d);
+        Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
+        Mat Hd(inst.d, 0.0);
         Mat A  = info_matrix_A(Hc, Hd, inst.S, cfg.Rs_c, cfg.Rs_d) + Mat(inst.d, cfg.lambda);
 
-        double Lt = lipschitz_Lt_bernoulli(t_c, t-1 - t_c, inst.S);
+        double Lt = lipschitz_Lt_bernoulli(t_c, t - t_c, inst.S);
         double beta = beta_t(cfg.delta, inst.d, inst.S, Lt);
 
         if (t > inst.d && stop_condition(inst, theta_hat, A, beta)) {
             break;
         }
 
-        int arm = rand() % inst.K;
+        int arm = int(rng.uniform01() * inst.K);
+        if (arm == inst.K) arm--;
 
-        int r01 = sample_classic_reward(inst, arm, rng);
-        Obs ob;
-        ob.is_duel = false;
-        ob.i = arm;
-        ob.r01 = r01;
-        ob.feat = inst.x[arm];
-        data.push_back(ob);
+        r01s[arm][sample_reward(inst, arm, rng)]++;
 
         Nc[arm] += 1;
         t_c += 1;

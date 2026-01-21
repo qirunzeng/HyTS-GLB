@@ -13,6 +13,7 @@
 #include "instance.h"
 #include "hybrid_bai.h"
 #include "baseline_glgape.h"
+#include "env.h"
 
 static bool has(const std::unordered_map<std::string,std::string>& mp, const std::string& k) {
     return mp.find(k)!=mp.end();
@@ -35,13 +36,13 @@ R"(Usage:
   glb_bai --mode gen --out instance.txt --K 10 --d 5 --S 2.0 --seed 1
 
   # Run Hybrid (default)
-  glb_bai --mode run --algo hybrid --load instance.txt --delta 0.05 --max_steps 20000 --seed 2
+  glb_bai --mode run --algo hybrid --load instance.txt --delta 0.2 --max_steps 200000 --seed 2
 
   # Run GLGapE baseline
-  glb_bai --mode run --algo glgape --load instance.txt --delta 0.05 --eps 0.1 --seed 2
+  glb_bai --mode run --algo glgape --load instance.txt --delta 0.2 --eps 0.1 --seed 2
 
   # Multiple trials
-  glb_bai --mode run --algo glgape --load instance.txt --runs 50 --delta 0.05 --eps 0.1 --seed 123
+  glb_bai --mode run --algo glgape --load instance.txt --runs 50 --delta 0.2 --eps 0.1 --seed 123
 
 Common options:
   --mode gen|run
@@ -63,7 +64,6 @@ Hybrid options (run, --algo random):
 GLGapE options (run, --algo glgape):
   --delta, --eps
   --E
-  --alpha
   --downscale_C (0/1), --C_scale
 )";
 }
@@ -81,23 +81,48 @@ static std::string fmt_S(double S) {
     return s;
 }
 
-static std::string build_outfile(const std::string& algo, int d, double S, int K,
-                                 bool reward_only, bool duel_only) {
+static std::string build_outfile(
+    const std::string& algo, int d, double S, int K,
+    bool reward_only, bool duel_only, double delta
+) {
     std::string prefix;
     if (algo == "glgape") {
         prefix = "Baseline";
     } else if (algo == "hybrid") {
         // Both if neither-only flag is set; otherwise Reward_Only
         if (!reward_only && !duel_only) prefix = "Hybrid_Both";
-        else prefix = "Reward_Only";
+        else if (reward_only) prefix = "Reward_Only";
+        else prefix = "Dueling_Only";
     } else {
         prefix = algo;
     }
 
     std::ostringstream oss;
-    oss << prefix << "_" << d << "_" << fmt_S(S) << "_" << K << ".txt";
+    oss << prefix << "_" << d << "_" << fmt_S(S) << "_" << K << "_" << delta << ".txt";
     return oss.str();
 }
+
+auto init = [](Instance &inst) {
+    double max_m = -1.;
+    for (int i = 0; i < inst.K; ++i) {
+        inst.dots[i] = dot(inst.x[i], inst.theta_star);
+        inst.means[i] = sigmoid(inst.dots[i]);
+        std::cout << max_m << " " << inst.means[i] << std::endl;
+        if (inst.dots[i] > max_m) {
+            max_m = inst.dots[i];
+            inst.best = i;
+            std::cout << "Best: " << inst.best << std::endl;
+        }
+    }
+    for (int j = 0; j < inst.K; ++j) {
+        for (int k = j+1; k < inst.K; ++k) {
+            inst.g[j][k] = inst.x[j] - inst.x[k];
+            inst.gap_dots[j][k] = dot(inst.g[j][k], inst.theta_star);
+            inst.gaps[j][k] = sigmoid(inst.gap_dots[j][k]);
+        }
+    }
+};
+
 
 int main(int argc, char** argv) {
     std::unordered_map<std::string,std::string> mp;
@@ -129,10 +154,10 @@ int main(int argc, char** argv) {
         save_instance(inst, out);
 
         std::cout << "Generated instance to: " << out << "\n";
-        std::cout << "True best arm = " << inst.true_best_arm() << "\n";
         return 0;
     }
 
+        
     if (mode == "run") {
         std::string path = get(mp, "--load", "");
         if (path.empty()) { std::cerr << "--load is required in run mode\n"; return 1; }
@@ -142,16 +167,18 @@ int main(int argc, char** argv) {
         int runs = geti(mp, "--runs", 1);
 
         // Optional console debug (keep if you want)
-        std::cout << "i^star: " << inst.true_best_arm() << "\n";
         for (int i = 0; i < inst.K; ++i) {
             double dotp = dot(inst.x[i], inst.theta_star);
             std::cout << "Arm " << i << ": x_i^T theta* = " << dotp << "\n";
         }
-
+        inst.reallocate();
+        init(inst);
+        std::cout << "i^star: " << inst.true_best_arm() << "\n";
+        
         if (algo == "hybrid") {
             HybridConfig cfg;
-            cfg.delta = getd(mp, "--delta", 0.05);
-            cfg.max_steps = geti(mp, "--max_steps", 20000);
+            cfg.delta = getd(mp, "--delta", 0.2);
+            cfg.max_steps = geti(mp, "--max_steps", 200000);
 
             cfg.Rs_c = getd(mp, "--Rs_c", 1.0);
             cfg.Rs_d = getd(mp, "--Rs_d", 1.0);
@@ -162,18 +189,14 @@ int main(int argc, char** argv) {
             cfg.reward_only = (geti(mp, "--reward_only", 0) != 0);
             cfg.duel_only = (geti(mp, "--duel_only", 0) != 0);
 
-            // cfg.tstar_samples = geti(mp, "--tstar_samples", 2000);
-
-            // double Tstar = approx_T_star(inst, cfg, rng);
-            // std::cout << std::fixed << std::setprecision(6);
-            // std::cout << "Approx T*(theta*) = " << Tstar << "\n";
-
             long long sumT = 0;
             int succ = 0;
 
             std::filesystem::create_directories("../output");
-            std::string outname = build_outfile(algo, inst.d, inst.S, inst.K, cfg.reward_only, cfg.duel_only);
+            std::string outname = build_outfile(algo, inst.d, inst.S, inst.K, cfg.reward_only, cfg.duel_only, cfg.delta);
             std::string outpath = std::string("../output/") + outname;
+
+            std::cout << outname << std::endl;
 
             std::ofstream out(outpath, std::ios::out | std::ios::trunc);
             if (!out) throw std::runtime_error("cannot open for writing: " + outpath);
@@ -196,22 +219,24 @@ int main(int argc, char** argv) {
                 out << (r + 1) << ", " << rs.stop_time << ", " << (rs.correct ? 1 : 0) << "\n";
             }
 
-            out.close();
 
             // Optional console summary
-            std::cout << "Algo = hybrid"
-                      << ", Runs = " << runs
-                      << ", Avg stop time = " << (double)sumT / (double)runs
-                      << ", Success rate = " << (double)succ / (double)runs
-                      << "\n";
+            out << "Algo = hybrid"
+                << ", Runs = " << runs
+                << ", Avg stop time = " << (double)sumT / (double)runs
+                << ", Success rate = " << (double)succ / (double)runs
+                << "\n";
+
+
+            out.close();
 
             return 0;
         }
 
         else if (algo == "random") {
             HybridConfig cfg;
-            cfg.delta           = getd(mp, "--delta",           0.05);
-            cfg.max_steps       = geti(mp, "--max_steps",       20000);
+            cfg.delta           = getd(mp, "--delta",           0.2);
+            cfg.max_steps       = geti(mp, "--max_steps",       200000);
 
             cfg.Rs_c            = getd(mp, "--Rs_c",            1.0);
             cfg.Rs_d            = getd(mp, "--Rs_d",            1.0);
@@ -225,7 +250,8 @@ int main(int argc, char** argv) {
             int succ = 0;
 
             std::filesystem::create_directories("../output");
-            std::string outname = build_outfile(algo, inst.d, inst.S, inst.K, cfg.reward_only, cfg.duel_only);
+            std::string outname = build_outfile(algo, inst.d, inst.S, inst.K, cfg.reward_only, cfg.duel_only, cfg.delta);
+
             std::string outpath = std::string("../output/") + outname;
 
             std::ofstream out(outpath, std::ios::out | std::ios::trunc);
@@ -249,13 +275,13 @@ int main(int argc, char** argv) {
                 out << (r + 1) << ", " << rs.stop_time << ", " << (rs.correct ? 1 : 0) << "\n";
             }
 
-            out.close();
+            out << "Algo = random"
+                << ", Runs = " << runs
+                << ", Avg stop time = " << (double)sumT / (double)runs
+                << ", Success rate = " << (double)succ / (double)runs
+                << "\n";
 
-            std::cout << "Algo = random"
-                      << ", Runs = " << runs
-                      << ", Avg stop time = " << (double)sumT / (double)runs
-                      << ", Success rate = " << (double)succ / (double)runs
-                      << "\n";
+            out.close();
 
             return 0;
         }
@@ -263,28 +289,23 @@ int main(int argc, char** argv) {
 
         else if (algo == "glgape") {
             GLGapEConfig cfg;
-            cfg.delta = getd(mp, "--delta", 0.05);
-            cfg.eps   = getd(mp, "--eps", 0.1);
+            cfg.delta       = getd(mp, "--delta", 0.2);
+            cfg.eps         = getd(mp, "--eps", 0.1);
 
-            cfg.E     = geti(mp, "--E", -1);
-            cfg.alpha = getd(mp, "--alpha", -1.0);
+            cfg.E           = geti(mp, "--E", -1);
+            cfg.max_steps   = geti(mp, "--max_steps",       200000);
 
-            auto sigmoid = [](double z) {
-                return 1 / (1 + std::exp(-z));
-            };
-            double sig = sigmoid(double(inst.S-1));
-
-            cfg.c_mu = sig * (1 - sig);
+            cfg.c_mu = mu_prime(double(inst.S - 1));
             std::cout << "Low = " << cfg.c_mu << std::endl;
 
             cfg.downscale_C = (geti(mp, "--downscale_C", 0) != 0);
-            cfg.C_scale = getd(mp, "--C_scale", 1.0);
+            cfg.C_scale     = getd(mp, "--C_scale", 1.0);
 
-            long long sumT = 0;
+            long long sumT  = 0;
             int succ = 0;
 
             std::filesystem::create_directories("../output");
-            std::string outname = build_outfile(algo, inst.d, inst.S, inst.K, false, false);
+            std::string outname = build_outfile(algo, inst.d, inst.S, inst.K, false, false, cfg.delta);
             std::string outpath = std::string("../output/") + outname;
 
             std::ofstream out(outpath, std::ios::out | std::ios::trunc);
@@ -303,14 +324,14 @@ int main(int argc, char** argv) {
                 out << (r + 1) << ", " << rs.stop_t << ", " << (rs.correct ? 1 : 0) << "\n";
             }
 
-            out.close();
-
             // Optional console summary
-            std::cout << "Algo = glgape"
-                      << ", Runs = " << runs
-                      << ", Avg stop time = " << (double)sumT / (double)runs
-                      << ", Success rate = " << (double)succ / (double)runs
-                      << "\n";
+            out << "Algo = glgape"
+                << ", Runs = " << runs
+                << ", Avg stop time = " << (double)sumT / (double)runs
+                << ", Success rate = " << (double)succ / (double)runs
+                << "\n";
+
+            out.close();
 
             return 0;
         }
