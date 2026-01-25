@@ -38,3 +38,63 @@ inline int sample_duel_outcome(const Instance& inst, int j, int k, RNG& rng) {
     return (rng.uniform01() < inst.gaps[j][k]) ? 1 : 0;
 }
 
+#include <vector>
+
+struct MeanStd {
+    double mean;
+    double stdev;
+};
+
+static MeanStd mean_std(const std::vector<long long>& a) {
+    MeanStd ms{0.0, 0.0};
+    const size_t n = a.size();
+    if (n == 0) return ms;
+
+    long double sum = 0.0L;
+    for (long long x : a) sum += (long double)x;
+    const long double mean = sum / (long double)n;
+
+    if (n <= 1) {
+        ms.mean = (double)mean;
+        ms.stdev = 0.0;
+        return ms;
+    }
+
+    long double ss = 0.0L;
+    for (long long x : a) {
+        long double diff = (long double)x - mean;
+        ss += diff * diff;
+    }
+    // sample stdev
+    long double var = ss / (long double)(n - 1);
+    ms.mean = (double)mean;
+    ms.stdev = std::sqrt((double)var);
+    return ms;
+}
+
+
+static MeanStd mean_std(const std::vector<double>& a) {
+    MeanStd ms{0.0, 0.0};
+    const size_t n = a.size();
+    if (n == 0) return ms;
+
+    long double sum = 0.0L;
+    for (double x : a) sum += (long double)x;
+    const long double mean = sum / (long double)n;
+
+    if (n <= 1) {
+        ms.mean = (double)mean;
+        ms.stdev = 0.0;
+        return ms;
+    }
+
+    long double ss = 0.0L;
+    for (double x : a) {
+        long double diff = (long double)x - mean;
+        ss += diff * diff;
+    }
+    long double var = ss / (long double)(n - 1); // sample variance
+    ms.mean = (double)mean;
+    ms.stdev = std::sqrt((double)var);
+    return ms;
+}

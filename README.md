@@ -20,7 +20,7 @@ GLB-BAI/
 
 ```cmake
 cmake_minimum_required(VERSION 3.12)
-project(glb_bai_hybrid CXX)
+project(main_hybrid CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,17 +31,17 @@ if (NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-add_executable(glb_bai
+add_executable(main
     src/main.cpp
 )
 
-target_include_directories(glb_bai PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(main PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Reasonable warnings
 if (MSVC)
-  target_compile_options(glb_bai PRIVATE /W4)
+  target_compile_options(main PRIVATE /W4)
 else()
-  target_compile_options(glb_bai PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(main PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 ```
 
@@ -66,42 +66,74 @@ cmake ..
 make
 ````
 
-You should see `glb_bai` in `build/`.
+You should see `main` in `build/`.
 
 ## Quick run (should finish fast)
+
+## # Batch: generate runs instances, and run 4 algos each time
+```bash  
+./main --mode batch --K 5 --d 4 --S 5.0 --seed 123 --delta 0.05 --max_steps 2000000 --runs 10
+```
+
+> For Cost Analysis:
+
+
+```bash
+./main --mode --K 3 --d 2 --S 5.0 cost --load instance.txt --delta 0.05 --max_steps 20000000 --runs 10 --seed 123
+```
+
+
+
+
 
 ### 1) Generate an instance
 
 ```bash
-./glb_bai --mode gen --out instance.txt --K 10 --d 2 --S 5.0 --seed 1
+./main --mode gen --out instance.txt --K 10 --d 4 --S 5.0 --seed 1
 ```
 
 ### 2) Run the algorithm (single trial)
 
 ```bash
-./glb_bai --mode run --load instance.txt --delta 0.2 --max_steps 2000000 --seed 2
+./main --mode run --load instance.txt --delta 0.05 --max_steps 20000000 --seed 123
 ```
 
 ### 3) Run multiple trials (average stopping time + success rate)
 
+> Under Hybrid Case.
+
 ```bash
-./glb_bai --mode run --load instance.txt --delta 0.2 --max_steps 2000000 --runs 10 --seed 123
+./main --mode run --load instance.txt --delta 0.05 --max_steps 20000000 --runs 10 --seed 123
 ```
 
+> For Reward Only.
 
 ```bash
-./glb_bai --mode run --reward_only --load instance.txt --delta 0.2 --max_steps 2000000 --runs 10 --seed 123
+./main --mode run --reward_only --load instance.txt --delta 0.05 --max_steps 20000000 --runs 10 --seed 123
 ```
 
 ### 4) Baseline:
 
 ```bash
-./glb_bai --mode run --algo glgape --load instance.txt  --max_steps 2000000 --delta 0.2 --eps 0.0 --seed 123 --runs 10
+./main --mode run --algo glgape --load instance.txt  --max_steps 20000000 --delta 0.05 --eps 0.0 --seed 123 --runs 10
 ```
 
 
 ```bash
-./glb_bai --mode run --algo random --load instance.txt --delta 0.2 --max_steps 2000000 --runs 10 --seed 123
+./main --mode run --algo rageglm --load instance.txt  --max_steps 20000000 --delta 0.05 --seed 123 --runs 10
+```
+
+```bash
+./main --mode run --algo rageglm --duel 1 --load instance.txt  --max_steps 20000000 --delta 0.05 --seed 123 --runs 10
+```
+
+
+```bash
+./main --mode run --algo random --load instance.txt --delta 0.05 --max_steps 20000000 --runs 10 --seed 123
+```
+
+```bash
+./main --mode run --algo random --duel 1 --load instance.txt --delta 0.05 --max_steps 20000000 --runs 10 --seed 123
 ```
 
 ## Main parameters
@@ -126,12 +158,3 @@ You should see `glb_bai` in `build/`.
 * Next K lines: x_i (d numbers per line)
 
 All vectors are stored in Euclidean coordinates.
-
-## Notes on speed
-
-To get a version that finishes in ~1 minute:
-
-* Use moderate K,d (e.g., K=10..30, d=5..20).
-* Set `--max_steps` around 5e3 to 2e4.
-* Use `--runs` modestly (10..50).
-* If the algorithm stops too slowly, increase `--lambda` slightly (e.g., 1e-4) for numerical stability and/or reduce `--S`.

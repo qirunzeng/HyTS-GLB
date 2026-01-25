@@ -51,43 +51,117 @@ inline double total_nll_grad_hess(
     double zeta_d,
     const Instance& inst
 ) {
-    int d = theta.dim();
+    const int d = theta.dim();
+
+    // 复位（如果 Vec/Mat 内部是 std::vector，尽量保证它们已分配好容量）
     grad = Vec(d, 0.0);
     hess = Mat(d, 0.0);
 
+    const double inv_zc = 1.0 / zeta_c;
+    const double inv_zd = 1.0 / zeta_d;
 
     double loss = 0.0;
+
+    // ---- reward 部分 ----
     for (int i = 0; i < inst.K; ++i) {
-        double z = dot(inst.x[i], theta);
-        double p = sigmoid(z);
-        double w = mu_prime(z);
-        for (int r = 0; r < 2; ++r) {
-            loss += (1.0 / zeta_c) * nll_logistic(z, r) * r01s[i][r];
-            double coef = (1.0 / zeta_c) * (p - (double)r);
-            for (int j = 0; j < d;++j) {
-                grad[j] += coef * inst.x[i][j] * r01s[i][r];
+        const int n0 = r01s[i][0];
+        const int n1 = r01s[i][1];
+        const int n  = n0 + n1;
+        if (n == 0) continue;
+
+        const double z = dot(inst.x[i], theta);
+        const double p = sigmoid(z);
+        const double w = mu_prime(z);
+
+        // loss
+        loss += inv_zc * ( (double)n1 * nll_logistic(z, 1) + (double)n0 * nll_logistic(z, 0) );
+
+        // grad: (n*p - n1) * x
+        const double gcoef = inv_zc * ( (double)n * p - (double)n1 );
+        for (int j = 0; j < d; ++j) {
+            grad[j] += gcoef * inst.x[i][j];
+        }
+
+        // hess: n * w * xx^T
+        const double hcoef = inv_zc * (double)n * w;
+        for (int a = 0; a < d; ++a) {
+            const double xa = inst.x[i][a];
+            for (int b = 0; b < d; ++b) {
+                hess(a,b) += hcoef * xa * inst.x[i][b];
             }
         }
-        hess = hess + (1.0 * (r01s[i][0] + r01s[i][1]) * (1.0 / zeta_c) * w) * outer(inst.x[i]);
+    }
+
+    // ---- duel 部分 ----
+    for (int j = 0; j < inst.K; ++j) {
+        for (int k = j + 1; k < inst.K; ++k) {
+            const int n0 = y01s[j][k][0];
+            const int n1 = y01s[j][k][1];
+            const int n  = n0 + n1;
+            if (n == 0) continue;
+
+            const double z = dot(inst.g[j][k], theta);
+            const double p = sigmoid(z);
+            const double w = mu_prime(z);
+
+            loss += inv_zd * ( (double)n1 * nll_logistic(z, 1) + (double)n0 * nll_logistic(z, 0) );
+
+            const double gcoef = inv_zd * ( (double)n * p - (double)n1 );
+            for (int l = 0; l < d; ++l) {
+                grad[l] += gcoef * inst.g[j][k][l];
+            }
+
+            const double hcoef = inv_zd * (double)n * w;
+            for (int a = 0; a < d; ++a) {
+                const double ga = inst.g[j][k][a];
+                for (int b = 0; b < d; ++b) {
+                    hess(a,b) += hcoef * ga * inst.g[j][k][b];
+                }
+            }
+        }
+    }
+
+    return loss;
+}
+
+inline double total_nll_only(
+    const std::vector<std::vector<int>>& r01s,
+    const std::vector<std::vector<std::vector<int>>> y01s,
+    const Vec& theta,
+    double zeta_c,
+    double zeta_d,
+    const Instance& inst
+) {
+    const double inv_zc = 1.0 / zeta_c;
+    const double inv_zd = 1.0 / zeta_d;
+
+    double loss = 0.0;
+
+    for (int i = 0; i < inst.K; ++i) {
+        const int n0 = r01s[i][0];
+        const int n1 = r01s[i][1];
+        const int n  = n0 + n1;
+        if (n == 0) continue;
+
+        const double z = dot(inst.x[i], theta);
+        loss += inv_zc * ( (double)n1 * nll_logistic(z, 1) + (double)n0 * nll_logistic(z, 0) );
     }
 
     for (int j = 0; j < inst.K; ++j) {
-        for (int k = j+1; k < inst.K; ++k) {
-            double z = dot(inst.g[j][k], theta);
-            double p = sigmoid(z);
-            double w = mu_prime(z);
-            for (int r = 0; r < 2; ++r) {
-                loss += (1.0 / zeta_d) * nll_logistic(z, r) * y01s[j][k][r];
-                double coef = (1.0 / zeta_d) * (p - (double)r);
-                for (int l = 0; l < d; ++l) {
-                    grad[l] += coef * inst.g[j][k][l] * y01s[j][k][r];
-                }
-            }
-            hess = hess + (1.0 * (y01s[j][k][0] + y01s[j][k][1]) * (1.0 / zeta_d) * w) * outer(inst.g[j][k]);
+        for (int k = j + 1; k < inst.K; ++k) {
+            const int n0 = y01s[j][k][0];
+            const int n1 = y01s[j][k][1];
+            const int n  = n0 + n1;
+            if (n == 0) continue;
+
+            const double z = dot(inst.g[j][k], theta);
+            loss += inv_zd * ( (double)n1 * nll_logistic(z, 1) + (double)n0 * nll_logistic(z, 0) );
         }
     }
+
     return loss;
 }
+
 
 // Projected Newton with backtracking line search for constrained MLE over ||theta||<=S.
 inline Vec constrained_mle_logistic(
@@ -103,55 +177,67 @@ inline Vec constrained_mle_logistic(
 ) {
     double prev = 1e100;
 
+    // 复用缓冲区，避免每轮分配
+    Vec g(d);
+    Mat H(d);
+    Vec negg(d);
+    Vec p(d);
+    Vec cand(d);
+
     for (int it = 0; it < cfg.max_iter; ++it) {
-        Vec g(d);
-        Mat H(d);
-        
-        double f = total_nll_grad_hess(r01s, y01s, theta, g, H, zeta_c, zeta_d, inst);
-        
-        double gnorm = g.norm2();
+        const double f = total_nll_grad_hess(r01s, y01s, theta, g, H, zeta_c, zeta_d, inst);
+
+        const double gnorm = g.norm2();
         if (gnorm < cfg.tol) break;
         if (std::fabs(prev - f) < cfg.tol * (1.0 + std::fabs(f))) break;
         prev = f;
 
-        // Newton direction: p = - H^{-1} g
-
-        double reg = 1e-3; // can be tuned or made adaptive
+        // Hreg = H + reg I（如果 Mat 复制很贵，可以改成 solve 内部加对角，但先保持简单）
+        double reg = 1e-3;
         Mat Hreg = H;
         for (int j = 0; j < d; ++j) Hreg(j,j) += reg;
 
-        Vec negg(d);
         for (int j = 0; j < d; ++j) negg[j] = -g[j];
+        p = solve_spd_cholesky(Hreg, negg);
 
-        Vec p = solve_spd_cholesky(Hreg, negg);
+        // Armijo: g^T p
+        double gTp = 0.0;
+        for (int j = 0; j < d; ++j) gTp += g[j] * p[j];
 
-        // backtracking line search with projection
+        // 下降性保护
+        if (gTp >= 0.0) {
+            for (int j = 0; j < d; ++j) p[j] = -g[j];
+            gTp = -gnorm * gnorm;
+        }
+
+        // backtracking line search (只算 NLL)
         double step = 1.0;
-        bool accepted=false;
+        bool accepted = false;
+        const double c1 = 1e-4;
+
         for (;;) {
-            Vec cand = theta + step * p;
+            // cand = project_to_ball(theta + step*p, S)
+            for (int j = 0; j < d; ++j) cand[j] = theta[j] + step * p[j];
             cand = project_to_ball(cand, S);
 
-            Vec cg(d);
-            Mat cH(d);
-            double cf = total_nll_grad_hess(r01s, y01s, cand, cg, cH, zeta_c, zeta_d, inst);
+            const double cf = total_nll_only(r01s, y01s, cand, zeta_c, zeta_d, inst);
 
-            // Armijo condition (simple)
-            if (cf <= f - 1e-4 * step * gnorm * gnorm) {
+            if (cf <= f + c1 * step * gTp) {
                 theta = cand;
-                accepted=true;
+                accepted = true;
                 break;
             }
             step *= cfg.step_backtrack;
             if (step < cfg.min_step) break;
         }
+
         if (!accepted) {
             // fallback: small gradient step + projection
-            double eta = 0.1 / (1.0 + it);
-            Vec cand(d);
+            const double eta = 0.1 / (1.0 + it);
             for (int j = 0; j < d; ++j) cand[j] = theta[j] - eta * g[j];
             theta = project_to_ball(cand, S);
         }
     }
+
     return theta;
 }

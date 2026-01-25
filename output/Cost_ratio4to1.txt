@@ -1,0 +1,25 @@
+Seed = 123, Delta = 0.05
+K = 3, d = 2, S = 5, max_steps = 20000000, inst_per_group = 10, runs_per_instance = 1, ratio = 4:1, cc = 1.6, cd = 0.4, (cc+cd=2)
+Setting, Instance, InstanceSeed, Method, StopTime, Cost_c, Cost_d, TotalCost, Right
+8, 1, 7000161, WithCost, 2602, 9.6, 1038.4, 430.72, 1
+8, 1, 7000161, NoCost, 3348, 3193.6, 540.8, 3734.4, 1
+8, 2, 7000292, WithCost, 2472, 9.6, 986.4, 409.92, 1
+8, 2, 7000292, NoCost, 3812, 5825.6, 68.4, 5894, 1
+8, 3, 7000423, WithCost, 3151, 11.2, 1257.6, 520.96, 1
+8, 3, 7000423, NoCost, 3528, 3622.4, 505.6, 4128, 1
+8, 4, 7000554, WithCost, 2818, 9.6, 1124.8, 465.28, 1
+8, 4, 7000554, NoCost, 3129, 4969.6, 9.2, 4978.8, 1
+8, 5, 7000685, WithCost, 2120, 41.6, 837.6, 401.6, 1
+8, 5, 7000685, NoCost, 1877, 1264, 434.8, 1698.8, 1
+8, 6, 7000816, WithCost, 2623, 9.6, 1046.8, 434.08, 1
+8, 6, 7000816, NoCost, 3112, 2923.2, 514, 3437.2, 1
+8, 7, 7000947, WithCost, 1068, 60.8, 412, 262.08, 1
+8, 7, 7000947, NoCost, 998, 408, 297.2, 705.2, 1
+8, 8, 7001078, WithCost, 2512, 9.6, 1002.4, 416.32, 1
+8, 8, 7001078, NoCost, 3391, 3296, 532.4, 3828.4, 1
+8, 9, 7001209, WithCost, 1985, 40, 784, 377.6, 1
+8, 9, 7001209, NoCost, 1721, 1008, 436.4, 1444.4, 1
+8, 10, 7001340, WithCost, 2519, 9.6, 1005.2, 417.44, 1
+8, 10, 7001340, NoCost, 3683, 5875.2, 4.4, 5879.6, 1
+Summary: WithCost, Avg_C_Cost = 21.12, Std_C_Cost = 18.9885, Avg_D_Cost = 949.52, Std_D_Cost = 230.725, AvgStopTime = 2387, StdStopTime = 566.108, SuccessRate = 1
+Summary: NoCost, Avg_C_Cost = 3238.56, Std_C_Cost = 1937.34, Avg_D_Cost = 334.32, Std_D_Cost = 223.768, AvgStopTime = 2859.9, StdStopTime = 967.039, SuccessRate = 1
