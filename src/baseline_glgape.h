@@ -10,31 +10,14 @@
 #include "instance.h"
 #include "mle.h"
 
-// ============================================================================
-// GLGapE baseline (Kazerouni & Wein style) for Logistic GLM bandits
-// - Classic feedback only (Bernoulli-logistic rewards)
-// - Uses constrained MLE from mle.h (projected Newton + backtracking)
-// - Avoids explicit matrix inverse: all quadratic forms use solve_spd_cholesky
-// - Select-gap + Select-arm (L1 LP) + tracking
-// ============================================================================
-
-// -------- Simplex LP for min ||w||_1 s.t. X w = y --------
-// Convert to: min sum u_i
-// s.t.  X (w^+ - w^-) = y,  w^+, w^- >= 0
-// objective: sum (w^+ + w^-)
-// variables: z = [w^+ (K), w^- (K)] >= 0
-// constraints: A z = y, where A = [X, -X] of size d x (2K)
 struct SimplexEq {
-    // minimize c^T x, subject to A x = b, x>=0
-    // Big-M with artificials (sufficient for small d,K).
     int m=0, n=0;
-    std::vector<std::vector<double>> A; // m x n
-    std::vector<double> b;              // m
-    std::vector<double> c;              // n
-    std::vector<double> x;              // n solution
+    std::vector<std::vector<double>> A;
+    std::vector<double> b;  
+    std::vector<double> c; 
+    std::vector<double> x; 
 
     bool solve(double M = 1e6, int maxit = 20000, double eps = 1e-6) {
-        // Tableau with artificials: n + m variables
         int N = n + m;
         std::vector<std::vector<double>> T(m + 1, std::vector<double>(N + 1, 0.0));
         std::vector<int> basis(m, -1);
@@ -47,7 +30,7 @@ struct SimplexEq {
             } else {
                 for (int j = 0; j < n; ++j) T[i][j] = A[i][j];
             }
-            T[i][n + i] = 1.0;  // artificial
+            T[i][n + i] = 1.0;
             T[i][N] = bi;
             basis[i] = n + i;
         }
@@ -81,7 +64,7 @@ struct SimplexEq {
             for (int j = 0; j < N; ++j) {
                 if (T[m][j] < best) { best = T[m][j]; s = j; }
             }
-            if (s < 0) break; // optimal
+            if (s < 0) break;
 
             int r = -1;
             double minratio = std::numeric_limits<double>::infinity();
@@ -92,7 +75,7 @@ struct SimplexEq {
                     if (ratio < minratio) { minratio = ratio; r = i; }
                 }
             }
-            if (r < 0) return false; // unbounded
+            if (r < 0) return false;
 
             pivot(r, s);
         }
@@ -103,7 +86,6 @@ struct SimplexEq {
             if (var >= 0 && var < n) x[var] = T[i][N];
         }
 
-        // check artificials near zero
         for (int i = 0; i < m; ++i) {
             int var = basis[i];
             if (var >= n) {
@@ -133,8 +115,8 @@ inline void solve_l1_min_w(
 
     for (int a = 0; a < K; ++a) {
         for (int i = 0; i < d; ++i) {
-            lp.A[i][a]     = inst.x[a][i];   // w^+
-            lp.A[i][K + a] = -inst.x[a][i];  // w^-
+            lp.A[i][a]     = inst.x[a][i];
+            lp.A[i][K + a] = -inst.x[a][i];
         }
     }
 
@@ -149,43 +131,34 @@ inline void solve_l1_min_w(
     }
 }
 
-// -------------------- Baseline config/result --------------------
 
 struct GLGapEConfig {
-    // stopping tolerance (paper's ε)
     double eps = 0.1;
 
-    // confidence
     double delta = 0.05;
 
-    // warm-up length E; if <0: E = min(K, 3d)
     int E = -1;
 
     double kappa = -1.0;
 
     double alpha = -1.0;
 
-    // logistic has k_mu=1/4; c_mu depends on bounded |x^T theta|
     double c_mu = 1e-3;
     double k_mu = 0.25;
 
-    // optional: downscale Ct in practice
     bool downscale_C = false;
     double C_scale = 1.0;
 
-    // numerical ridge for M (design matrix)
     double ridge = 1e-6;
 
-    // max total pulls to prevent infinite loops
     int max_steps = 200000;
 
-    // constrained MLE config (reusing mle.h)
     MLEConfig mle_cfg;
 };
 
 struct GLGapEResult {
     int hat_arm = -1;
-    int stop_t  = 0;     // number of classic pulls
+    int stop_t  = 0;  
     bool correct = false;
 };
 
@@ -196,13 +169,11 @@ struct GLGapEResult {
 #include <algorithm>
 #include "lin_alg.h"
 
-// Power iteration to get lambda_max(M) for SPD M
-// returns an estimate of largest eigenvalue
 inline double lambda_max_spd_power(const Mat& M, int max_iter = 500, double tol = 1e-12) {
     const int n = M.n;
     if (n <= 0) throw std::runtime_error("lambda_max_spd_power: empty matrix");
     Vec v(n, 0.0);
-    for (int i = 0; i < n; ++i) v[i] = 1.0 / std::sqrt((double)n); // deterministic init
+    for (int i = 0; i < n; ++i) v[i] = 1.0 / std::sqrt((double)n);
 
     double lambda = 0.0;
     for (int it = 0; it < max_iter; ++it) {
@@ -211,7 +182,6 @@ inline double lambda_max_spd_power(const Mat& M, int max_iter = 500, double tol 
         if (nw <= 1e-18) throw std::runtime_error("lambda_max_spd_power: numerical breakdown");
         for (int i = 0; i < n; ++i) w[i] /= nw;
 
-        // Rayleigh quotient on normalized vector
         Vec Mw = mat_vec(M, w);
         double lambda_new = dot(w, Mw);
 
@@ -225,19 +195,15 @@ inline double lambda_max_spd_power(const Mat& M, int max_iter = 500, double tol 
     return lambda;
 }
 
-// Inverse power iteration to get lambda_min(M) for SPD M
-// Uses your solve_spd_cholesky(M, .) as an implicit M^{-1} multiply.
 inline double lambda_min_spd_inv_power(const Mat& M, int max_iter = 500, double tol = 1e-12) {
     const int n = M.n;
     if (n <= 0) throw std::runtime_error("lambda_min_spd_inv_power: empty matrix");
 
-    // deterministic init
     Vec v(n, 0.0);
     for (int i = 0; i < n; ++i) v[i] = 1.0 / std::sqrt((double)n);
 
     double lambda_min = 0.0;
     for (int it = 0; it < max_iter; ++it) {
-        // w = M^{-1} v
         Vec w = solve_spd_cholesky(M, v);
 
         double nw = w.norm2();
@@ -246,8 +212,6 @@ inline double lambda_min_spd_inv_power(const Mat& M, int max_iter = 500, double 
         }
         for (int i = 0; i < n; ++i) w[i] /= nw;
 
-        // Rayleigh quotient gives eigenvalue estimate for M along direction w:
-        // lambda(w) = (w^T M w) / (w^T w); here w normalized so denom=1.
         Vec Mw = mat_vec(M, w);
         double lambda_new = dot(w, Mw);
 
@@ -267,17 +231,12 @@ inline double lambda_min_spd_inv_power(const Mat& M, int max_iter = 500, double 
     return lambda_min;
 }
 
-// Compute kappa with L=1, first computing lambda0 = lambda_min(M)
-// kappa = sqrt(3 + 2 log(1 + 2 / lambda0))
 inline double compute_kappa_L1_from_M(const Mat& M) {
     double lambda0 = lambda_min_spd_inv_power(M);
     if (lambda0 <= 0.0) throw std::runtime_error("compute_kappa: lambda0 must be positive");
 
-    // L = 1 -> 2 L^2 = 2
     return std::sqrt(3.0 + 2.0 * std::log(1.0 + 2.0 / lambda0));
 }
-
-// -------------------- Internal helpers --------------------
 
 inline void mat_add_inplace(Mat& A, const Mat& B, int cnt = 1) {
     if (A.n != B.n) throw std::runtime_error("mat_add_inplace dim mismatch");
@@ -299,14 +258,13 @@ inline Mat compute_M_from_data(const Instance& inst, double ridge, std::vector<i
 }
 
 inline double quadform_Minv(const Mat& M, const Vec& y) {
-    Vec x = solve_spd_cholesky(M, y);   // x = M^{-1} y
+    Vec x = solve_spd_cholesky(M, y); 
     return dot(y, x);
 }
 
 const double pi = 3.14159265358979323846;
 
 inline double Ct_value(int t, const GLGapEConfig& cfg, int d) {
-    // Conservative, monotone Ct(t). (Matches typical GLM-BAI choices.)
     int tt = std::max(2, t);
     double inside = (pi * pi * (double)d * (double)tt * (double)tt) / (6.0 * cfg.delta);
     double val = std::sqrt(std::max(0.0, 2.0 * (double)d * std::log((double)tt) * std::log(inside)));
@@ -315,7 +273,6 @@ inline double Ct_value(int t, const GLGapEConfig& cfg, int d) {
     return C;
 }
 
-// Return predicted best arm under theta_hat (by mean, which is monotone in x^T theta for logistic)
 inline int argmax_mean(const Instance& inst, const Vec& theta_hat) {
     int best = 0;
     double bestz = dot(inst.x[0], theta_hat);
@@ -326,7 +283,6 @@ inline int argmax_mean(const Instance& inst, const Vec& theta_hat) {
     return best;
 }
 
-// Compute beta(i,j) and the maximizer y = c x_i - c' x_j where (c,c') in {c_mu,k_mu}^2
 inline void beta_and_y(
     const Instance& inst,
     const Vec& theta_hat,
@@ -337,7 +293,7 @@ inline void beta_and_y(
     double& beta_out,
     Vec& y_out
 ) {
-    (void)theta_hat; // not needed for corner-max version (depends only on bounds)
+    (void)theta_hat;
 
     double corners[2] = {cfg.c_mu, cfg.k_mu};
     double best = -1.0;
@@ -347,10 +303,9 @@ inline void beta_and_y(
         double c1 = corners[a];
         double c2 = corners[b];
 
-        // y = c1*x_i - c2*x_j, using only left scalar multiplication (lin_alg style)
         Vec y = (c1 * inst.x[i]) + ((-c2) * inst.x[j]);
 
-        double n2 = quadform_Minv(M, y); // y^T M^{-1} y
+        double n2 = quadform_Minv(M, y);  
         if (n2 > best) { best = n2; besty = y; }
     }
 
@@ -358,8 +313,6 @@ inline void beta_and_y(
     beta_out = Ct * std::sqrt(std::max(0.0, best));
 }
 
-// -------------------- Main baseline runner --------------------
-// Uses only reward pulls; dueling is ignored for this baseline.
 inline GLGapEResult run_glgape_baseline(
     Instance& inst,
     GLGapEConfig& cfg,
@@ -372,14 +325,12 @@ inline GLGapEResult run_glgape_baseline(
     if (E < 0) E = std::min(K, 3 * d);
     E = std::max(1, E);
 
-    // data and counts
     std::vector<int> T(K, 0);
 
 
     std::vector<std::vector<int>> r01s(inst.K, std::vector<int> (2, 0));
     std::vector<std::vector<std::vector<int>>> y01s(inst.K, std::vector<std::vector<int>> (inst.K, std::vector<int>(2, 0)));
 
-    // warm-up: random arms
     for (int t = 0; t < E && t < cfg.max_steps; ++t) {
         int arm = t % K;
 
@@ -441,7 +392,6 @@ inline GLGapEResult run_glgape_baseline(
         }
         
         if (jt < 0) {
-            // fallback: should not happen
             GLGapEResult res;
             res.hat_arm = it;
             res.stop_t = t;
@@ -449,7 +399,6 @@ inline GLGapEResult run_glgape_baseline(
             return res;
         }
 
-        // 4) stopping rule
         
         if (t % 500 == 0) {
             std::cout << Bt << std::endl;
@@ -462,7 +411,6 @@ inline GLGapEResult run_glgape_baseline(
             return res;
         }
 
-        // 5) select-arm: solve min ||w||_1 s.t. X w = y_t, convert to p, tracking
         solve_l1_min_w(inst, y_t, w);
 
         std::vector<double> p(K, 0.0);

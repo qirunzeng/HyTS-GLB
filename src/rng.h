@@ -11,7 +11,7 @@ struct RNG {
         return std::uniform_real_distribution<double>(0.0,1.0)(gen);
     }
 
-    int randint(int lo, int hi) { // inclusive
+    int randint(int lo, int hi) {
         return std::uniform_int_distribution<int>(lo, hi)(gen);
     }
 
@@ -28,7 +28,6 @@ struct RNG {
         return x;
     }
 
-    // random vector uniformly on ball ||x||<=1
     Vec random_ball_vec(int d) {
         Vec u = random_unit_vec(d);
         double r = std::pow(uniform01(), 1.0/d);

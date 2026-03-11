@@ -53,7 +53,6 @@ static std::string build_outfile(
 ) {
     std::string prefix;
     if (algo == "hybrid") {
-        // Both if neither-only flag is set; otherwise Reward_Only
         if (!reward_only && !duel_only) prefix = "Hybrid_Both";
         else if (reward_only) prefix = "Reward_Only";
         else prefix = "Dueling_Only";
@@ -71,7 +70,6 @@ auto init = [](Instance &inst) -> double {
     for (int i = 0; i < inst.K; ++i) {
         inst.dots[i] = dot(inst.x[i], inst.theta_star);
         inst.means[i] = sigmoid(inst.dots[i]);
-        // std::cout << max_m << " " << inst.means[i] << std::endl;
         if (inst.dots[i] > max_m) {
             max_m = inst.dots[i];
             inst.best = i;
@@ -86,7 +84,6 @@ auto init = [](Instance &inst) -> double {
             inst.gaps[j][k] = sigmoid(inst.gap_dots[j][k]);
         }
     }
-    // std::cout << ">>> Max g: " << duel_bound << std::endl;
     return duel_bound;
 };
 
@@ -141,24 +138,21 @@ int main(int argc, char** argv) {
     }
 
     if (mode == "cost") {
-        // Generate data instead of --load (because you want multiple instances)
         int K = geti(mp, "--K", 10);
         int d = geti(mp, "--d", 2);
         double S = getd(mp, "--S", 2.0);
 
         double delta = getd(mp, "--delta", 0.2);
         int max_steps = geti(mp, "--max_steps", 200000);
-        const int inst_per_group = 10;                       // fixed: 10 instances per group
-        const int runs_per_instance = 1;                     // fixed: each instance run once
+        const int inst_per_group = 10;           
+        const int runs_per_instance = 1;   
 
-        // Ratios from 1:5 to 5:1 (9 settings)
         const std::vector<std::pair<int,int>> ratio_list = {
-            {1,5},{1,4},{1,3},{1,2},{1,1},{2,1},{3,1},{4,1},{5,1}
+            {1,3},{1,2},{1,1},{2,1},{3,1}
         };
 
         std::filesystem::create_directories("../output");
 
-        // Base config (cc/cd will change per ratio; duel_bound depends on instance)
         HybridConfig cfg_base;
         cfg_base.delta     = delta;
         cfg_base.max_steps = max_steps;
@@ -173,7 +167,6 @@ int main(int argc, char** argv) {
             int a = ratio_list[si].first;
             int b = ratio_list[si].second;
 
-            // Normalize to cc+cd=2 while preserving ratio a:b
             double cc = 2.0 * (double)a / (double)(a + b);
             double cd = 2.0 * (double)b / (double)(a + b);
 
@@ -181,7 +174,6 @@ int main(int argc, char** argv) {
             cfg.cc = cc;
             cfg.cd = cd;
 
-            // One output file per ratio setting
             std::string outname =
                 "Cost_ratio" + std::to_string(a) + "to" + std::to_string(b)+ ".txt";
             std::string outpath = std::string("../output/") + outname;
@@ -200,16 +192,13 @@ int main(int argc, char** argv) {
 
             out << "Setting, Instance, InstanceSeed, Method, StopTime, Cost_c, Cost_d, TotalCost, Right\n";
 
-            // Collect stats separately for two methods
             std::vector<double> tot_with_c, tot_with_d, tot_no_c, tot_no_d;
             std::vector<double> st_with, st_no;
             int succ_with = 0, succ_no = 0;
             long long n_with = 0, n_no = 0;
 
-            // Each group has 10 instances; each instance run once
             for (int j = 0; j < inst_per_group; ++j) {
 
-                // Instance seed: depends on setting, group, instance index
                 uint64_t inst_seed =
                     seed
                     + 1000003ull * (uint64_t)si
@@ -224,12 +213,10 @@ int main(int argc, char** argv) {
                 cfg.duel_bound = duel_bound;
                 cfg.get_sc_sd(inst.S);
 
-                // 1) With-cost run (uses run_cost)
                 {
                     RNG rrng(inst_seed ^ 0x369dea0f31a53f85ull);
                     RunSummary rs = run_cost(inst, cfg, rrng);
 
-                    // total cost computed from returned (c_c, c_d)
                     double total_cost = cfg.cc * rs.c_c + cfg.cd * rs.c_d;
 
                     out << (si + 1) << ", " << (j + 1) << ", " << inst_seed
@@ -247,7 +234,6 @@ int main(int argc, char** argv) {
                     ++n_with;
                 }
 
-                // 2) No-cost run (uses run_one), but still compute cost at the end
                 {
                     RNG rrng(inst_seed ^ 0x369dea0f31a53f85ull);
                     RunSummary rs = run_one(inst, cfg, rrng);
@@ -270,7 +256,6 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Summary (Average / StdDev)
             MeanStd ms_tot_with_c = mean_std(tot_with_c);
             MeanStd ms_tot_with_d = mean_std(tot_with_d);
             MeanStd ms_tot_no_c   = mean_std(tot_no_c);
@@ -305,10 +290,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-
-
-
-    if (mode == "run") {
+    else if (mode == "run") {
         std::string path = get(mp, "--load", "");
         if (path.empty()) { std::cerr << "--load is required in run mode\n"; return 1; }
 
@@ -320,7 +302,6 @@ int main(int argc, char** argv) {
         double duel_bound = init(inst);
         std::cout << "Duel Bound: " << duel_bound << std::endl;
         
-        // Optional console debug (keep if you want)
         for (int i = 0; i < inst.K; ++i) {
             std::cout << "Arm " << i << ": x_i^T theta* = " << inst.dots[i] << "\n";
         }
@@ -477,7 +458,6 @@ int main(int argc, char** argv) {
                 out << (r + 1) << ", " << rs.stop_t << ", " << (rs.correct ? 1 : 0) << "\n";
             }
 
-            // Optional console summary
             out << "Algo = glgape"
                 << ", Runs = " << runs
                 << ", Avg stop time = " << (double)sumT / (double)runs
@@ -537,7 +517,6 @@ int main(int argc, char** argv) {
     }
 
     else if (mode == "batch") {
-        // Inputs you requested
         int d = geti(mp, "--d", 2);
         int K = geti(mp, "--K", d+1);
         double S = getd(mp, "--S", 2.0);
@@ -546,13 +525,12 @@ int main(int argc, char** argv) {
         int max_steps = geti(mp, "--max_steps", 200000);
         int runs = geti(mp, "--runs", 1);
         std::string algo = get(mp, "--algo", "hybrid");
-        // Store stop times for Average / StdDev
         std::vector<long long> st_rage;   st_rage.reserve(runs);
+        std::vector<long long> st_rage_duel;   st_rage_duel.reserve(runs);
         std::vector<long long> st_rand;   st_rand.reserve(runs);
         std::vector<long long> st_rets;   st_rets.reserve(runs);
         std::vector<long long> st_hyts;   st_hyts.reserve(runs);
 
-        // (optional) store success counts if you also want success rate
         int succ_rage = 0, succ_rand = 0, succ_rets = 0, succ_hyts = 0;
 
 
@@ -569,7 +547,6 @@ int main(int argc, char** argv) {
             std::ofstream out(path, std::ios::out | std::ios::trunc);
             if (!out) throw std::runtime_error("cannot open for writing: " + path);
 
-            // REQUIRED header: seed + delta
             out << "Seed = " << seed << ", Delta = " << delta << "\n";
             out << "K = " << K << ", d = " << d << ", S = " << fmt_S(S)
                 << ", max_steps = " << max_steps << ", runs = " << runs << "\n";
@@ -577,15 +554,12 @@ int main(int argc, char** argv) {
             out.close();
         };
 
-        // 4 output files
         init_file("RAGEGLM_NoDuel");
         init_file("Random_WithDuel");
-        init_file("ReTS_GLB"); // hybrid + reward_only=1
-        init_file("HyTS_GLB"); // hybrid + reward_only=0 (Both)
+        init_file("ReTS_GLB");
+        init_file("HyTS_GLB");
 
-        // ---- Config templates (instance-dependent values filled each run) ----
 
-        // ReTS-GLB / HyTS-GLB share HybridConfig
         HybridConfig hy_cfg;
         hy_cfg.delta     = delta;
         hy_cfg.max_steps = max_steps;
@@ -596,21 +570,21 @@ int main(int argc, char** argv) {
         hy_cfg.zeta_d = getd(mp, "--zeta_d", 1.0);
         hy_cfg.lambda = getd(mp, "--lambda", 1e-6);
 
-        // Random (With Duel) uses HybridConfig too (your run_rand_hybrid signature)
         HybridConfig rnd_cfg = hy_cfg;
         rnd_cfg.reward_only = true;
 
-        // Rage-GLM (Without Duel)
         RAGEGLMConfig rg_cfg;
         rg_cfg.delta     = delta;
         rg_cfg.max_steps = max_steps;
         rg_cfg.eps_round = getd(mp, "--eps_round", 0.10);
         rg_cfg.burnin_n  = geti(mp, "--burnin_n", -1);
-        rg_cfg.include_dueling_pairs_as_actions = 0; // WITHOUT Duel (key requirement)
+        rg_cfg.include_dueling_pairs_as_actions = 0;
+        RAGEGLMConfig rg_cfg_no_reward = rg_cfg;
+        rg_cfg_no_reward.include_dueling_pairs_as_actions = 1;
+        rg_cfg_no_reward.include_reward = 0; 
 
         printf("runs = %d\n", runs);
         
-        // ---- Main loop: each run generates fresh instance, then runs 4 algos ----
         for (int r = 0; r < runs; ++r) {
             std::cout << "Batch Run " << (r + 1) << "/" << runs << "\n";
 
@@ -621,14 +595,12 @@ int main(int argc, char** argv) {
             
             double duel_bound = init(inst);
 
-            // instance-dependent fields
             hy_cfg.duel_bound  = duel_bound;
             rnd_cfg.duel_bound = duel_bound;
 
             hy_cfg.get_sc_sd(inst.S);
             rnd_cfg.get_sc_sd(inst.S);
 
-            // 1) Rage-GLM (Without Duel)
             {
                 std::string path = outpath_of("RAGEGLM_NoDuel");
                 std::ofstream out(path, std::ios::out | std::ios::app);
@@ -645,7 +617,21 @@ int main(int argc, char** argv) {
 
             }
 
-            // 2) Random (With Duel)  -> force run_rand_hybrid
+            {
+                std::string path = outpath_of("RAGEGLM_NoReward");
+                std::ofstream out(path, std::ios::out | std::ios::app);
+                if (!out) throw std::runtime_error("cannot open for appending: " + path);
+
+                RNG rrng(inst_seed ^ 0x369dea0f31a53f85ull);
+                RAGEGLMResult rs = run_rageglm_baseline(inst, rg_cfg_no_reward, rrng);
+
+                out << (r + 1) << ", " << inst_seed << ", " << rs.stop_t << ", " << (rs.correct ? 1 : 0) << "\n";
+                out.close();
+                printf("RaGe-GLM (Duel): Round = %d\n", rs.stop_t);
+                st_rage_duel.push_back(rs.stop_t);
+                succ_rage += (rs.correct ? 1 : 0);
+            }
+
             {
                 std::string path = outpath_of("Random_WithDuel");
                 std::ofstream out(path, std::ios::out | std::ios::app);
@@ -663,14 +649,13 @@ int main(int argc, char** argv) {
             }
 
 
-            // 3) ReTS-GLB  -> hybrid with reward_only = 1
             {
                 std::string path = outpath_of("ReTS_GLB");
                 std::ofstream out(path, std::ios::out | std::ios::app);
                 if (!out) throw std::runtime_error("cannot open for appending: " + path);
 
                 HybridConfig cfg = hy_cfg;
-                cfg.reward_only = true;   // key
+                cfg.reward_only = true; 
                 cfg.duel_only   = false;
 
                 RNG rrng(inst_seed ^ 0x94d049bb133111ebull);
@@ -686,7 +671,6 @@ int main(int argc, char** argv) {
 
             }
 
-            // 4) HyTS-GLB  -> hybrid Both (reward_only = 0, duel_only = 0)
             {
                 std::string path = outpath_of("HyTS_GLB");
                 std::ofstream out(path, std::ios::out | std::ios::app);
@@ -709,10 +693,19 @@ int main(int argc, char** argv) {
 
             }
         }
-        // Append Average / StdDev to each output file
         {
             MeanStd ms = mean_std(st_rage);
             std::string path = outpath_of("RAGEGLM_NoDuel");
+            std::ofstream out(path, std::ios::out | std::ios::app);
+            if (!out) throw std::runtime_error("cannot open for appending: " + path);
+            out << "Average stop time = " << ms.mean
+                << ", StdDev = " << ms.stdev
+                << ", Success rate = " << (runs ? (double)succ_rage / (double)runs : 0.0)
+                << "\n";
+        }
+        {
+            MeanStd ms = mean_std(st_rage_duel);
+            std::string path = outpath_of("RAGEGLM_NoReward");
             std::ofstream out(path, std::ios::out | std::ios::app);
             if (!out) throw std::runtime_error("cannot open for appending: " + path);
             out << "Average stop time = " << ms.mean

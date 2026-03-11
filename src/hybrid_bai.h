@@ -9,14 +9,12 @@
 #include "env.h"
 #include "cholesky.h"
 
-// --- beta_t(delta) ---
 inline double beta_t(double delta, int d, double S, double L_t) {
     double ct = std::min(1.0, double(d) / (2.0 * S * L_t));
     double val = std::log(1.0/delta) - (double)d * std::log(ct) + 2.0 * S * L_t * ct;
     return val;
 }
 
-// Bernoulli/logistic L_t upper bound (CR-GLB Table 1): (1 + S/2)(t-1)
 inline double lipschitz_Lt_bernoulli(int t_c, int t_d, double S) {
     return (1.0 + S/2.0) * (t_c + 2*t_d);
 }
@@ -28,20 +26,19 @@ struct HybridConfig {
 
     int fw_iters = 20;
 
-    // self-concordance constants and zeta scalings
     double Rs_c = 1.0;
     double Rs_d = 1.0;
     double zeta_c = 1.0;
     double zeta_d = 1.0;
     double sc, sd;
 
-    double lambda = 1e-6;    // ridge added to A_t for invertibility
+    double lambda = 1e-6;
 
     MLEConfig mle_cfg;
 
     bool reward_only = false;
     bool duel_only = false;
-    double cc = 1., cd = 1.; // cost_c, cost_d
+    double cc = 1., cd = 1.;
 
     void get_sc_sd(double S) {
         sc = 1.0 / (2.0 * (1. + S * Rs_c));
@@ -79,7 +76,6 @@ inline Mat hessian_duel_only(const std::vector<std::vector<int>> Nd, const Vec& 
     return H;
 }
 
-// A_t := H_c /(2(1 + S Rs_c)) + H_d /(2(1 + 2 S Rs_d))
 inline Mat info_matrix_A(
     const Mat& Hc,
     const Mat& Hd,
@@ -114,8 +110,6 @@ inline int predicted_best_arm(const Instance& inst, const Vec& theta_hat) {
     return best;
 }
 
-// stopping: for i_hat, for all i!=i_hat, require
-// g^T theta_hat - sqrt(beta * g^T A^{-1} g) > 0
 inline bool stop_condition(
     const Instance& inst,
     const Vec& theta_hat,
@@ -141,7 +135,6 @@ inline bool stop_condition(
     return ret;
 }
 
-// choose which competitor is most uncertain (largest rad / max(mean_gap,eps))
 inline int worst_competitor(
     const Instance& inst,
     const Vec& theta_hat,
@@ -178,18 +171,15 @@ inline Mat compute_A_of_w(
 
     Mat Ac(d, cfg.lambda), Ad(d, cfg.lambda);
 
-    // classic
     for (int i = 0; i < K; ++i) {
         double wi = w_arm[i];
         if (wi <= 0.0) continue;
         double z = dot(inst.x[i], theta_hat);
-        double curv = mu_prime(z) / cfg.zeta_c; // logistic: mu'(z)=sigmoid(z)(1-sigmoid(z))
-        // Ac += wi * curv * x x^T
+        double curv = mu_prime(z) / cfg.zeta_c;
         for (int a = 0; a < d; ++a) for (int b = 0; b < d; ++b)
             Ac(a,b) += wi * curv * inst.x[i][a] * inst.x[i][b];
     }
 
-    // dueling
     for (int j = 0; j < K; ++j) {
         for (int k = j + 1; k < K; ++k) {
             double wjk = w_pair[j][k];
@@ -329,7 +319,6 @@ static void compute_optimal_proportions_track_stop(
         }
     }
 
-    // normalize
     double sum = 0.0;
     for (int i = 0; i < K; ++i) sum += w_arm[i];
     for (int j = 0; j < K; ++j) for (int k = j + 1; k < K; ++k) sum += w_pair[j][k];
@@ -354,8 +343,6 @@ static void cost_optimal_proportions_track_stop(
     for (int i = 0; i < K; ++i) w_arm[i] = 0.0;
     for (int j = 0; j < K; ++j) for (int k = 0; k < K; ++k) w_pair[j][k] = 0.0;
 
-    // ---------- cost-aware initialization (both modalities enabled) ----------
-    // w_arm[i] ∝ 1/cc, w_pair[j][k] ∝ 1/cd, then normalize to sum=1
     const double inv_cc = 1.0 / std::max(1e-12, cfg.cc);
     const double inv_cd = 1.0 / std::max(1e-12, cfg.cd);
 
@@ -384,7 +371,6 @@ static void cost_optimal_proportions_track_stop(
 
     const int ihat = predicted_best_arm(inst, theta_hat);
 
-    // ---------- precompute curvatures (both modalities) ----------
     std::vector<double> curv_arm(K, 0.0);
     for (int i = 0; i < K; ++i) {
         const double z = dot(inst.x[i], theta_hat);
@@ -399,7 +385,6 @@ static void cost_optimal_proportions_track_stop(
         }
     }
 
-    // ---------- Frank–Wolfe ----------
     for (int m = 0; m < cfg.fw_iters; ++m) {
         Mat A = compute_A_of_w(inst, theta_hat, cfg, w_arm, w_pair);
         Chol L = chol_spd(A);
@@ -438,7 +423,6 @@ static void cost_optimal_proportions_track_stop(
         for (int i = 0; i < K; ++i) w_arm[i] *= one_minus;
         for (int j = 0; j < K; ++j) for (int k = j + 1; k < K; ++k) w_pair[j][k] *= one_minus;
 
-        // ---------- cost-aware choice: compare gain per unit cost ----------
         const double eff_sc = sc_best / std::max(1e-12, cfg.cc);
         const double eff_sd = sd_best / std::max(1e-12, cfg.cd);
 
@@ -446,7 +430,6 @@ static void cost_optimal_proportions_track_stop(
         else                  w_pair[j_star][k_star] += gamma;
     }
 
-    // ---------- normalize ----------
     double sum = 0.0;
     for (int i = 0; i < K; ++i) sum += w_arm[i];
     for (int j = 0; j < K; ++j) for (int k = j + 1; k < K; ++k) sum += w_pair[j][k];
@@ -491,9 +474,6 @@ inline RunSummary run_cost(
 
     for (; t < cfg.max_steps; ++t) {
 
-        // if (t % 5000 == 0) {
-        //     std::cout << "Step: " << t << "\n";
-        // }
         theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
 
         Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
@@ -593,9 +573,6 @@ inline RunSummary run_one(
 
     for (; t < cfg.max_steps; ++t) {
 
-        // if (t % 5000 == 0) {
-        //     std::cout << "Step: " << t << "\n";
-        // }
         theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
 
         Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
@@ -683,10 +660,6 @@ inline RunSummary run_rand(Instance& inst, const HybridConfig& cfg, RNG& rng) {
 
     for (int t_c = 0; t < cfg.max_steps; ++t) {
 
-        // if (t % 5000 == 0) {
-        //     std::cout << "Step: " << t << "\n";
-        // }
-
         theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
 
         Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
@@ -753,10 +726,7 @@ inline RunSummary run_rand_hybrid(Instance& inst, const HybridConfig& cfg, RNG& 
 
 
     for (t_c = 0; t < cfg.max_steps; ++t) {
-        // if (t % 5000 == 0) {
-        //     std::cout << "Step: " << t << "\n";
-        // }
-
+     
         theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
 
         Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);

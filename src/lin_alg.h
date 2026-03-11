@@ -47,8 +47,8 @@ inline double dot(const Vec& x, const Vec& y) {
 }
 
 struct Mat {
-    int n;                 // square matrix n x n
-    std::vector<double> a; // row-major
+    int n;
+    std::vector<double> a;
 
     explicit Mat(int n_=0, double diag=0.0) : n(n_), a(n_*n_, 0.0) {
         if (diag!=0.0) {
@@ -91,7 +91,6 @@ inline Mat outer(const Vec& x) {
     return A;
 }
 
-// Gauss-Jordan inverse with partial pivoting (O(d^3)), for small/medium d.
 inline Mat inverse(Mat A) {
     int n=A.n;
     Mat I = Mat::identity(n);
@@ -126,7 +125,6 @@ inline Mat inverse(Mat A) {
 }
 
 inline double quad_form(const Mat& Ainv, const Vec& g) {
-    // g^T Ainv g
     Vec t = mat_vec(Ainv, g);
     return dot(g, t);
 }
@@ -139,7 +137,6 @@ inline Vec solve_spd_cholesky(const Mat& A, const Vec& b) {
     auto Lij  = [&](int i, int j) -> double& { return L[i*n+j]; };
     auto Lijc = [&](int i, int j) -> double  { return L[i*n+j]; };
 
-    // factorize A = L L^T
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j <= i; ++j) {
             double s = A(i,j);
@@ -153,7 +150,6 @@ inline Vec solve_spd_cholesky(const Mat& A, const Vec& b) {
         }
     }
 
-    // forward: L y = b
     Vec y(n, 0.0);
     for (int i=0;i<n;++i) {
         double s = b[i];
@@ -161,7 +157,6 @@ inline Vec solve_spd_cholesky(const Mat& A, const Vec& b) {
         y[i] = s / Lijc(i,i);
     }
 
-    // backward: L^T x = y
     Vec x(n, 0.0);
     for (int i=n-1;i>=0;--i) {
         double s = y[i];

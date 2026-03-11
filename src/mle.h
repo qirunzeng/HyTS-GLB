@@ -6,23 +6,6 @@
 #include "lin_alg.h"
 #include "env.h"
 
-// One observation can be reward or dueling.
-// struct Obs {
-//     bool is_duel = false;
-
-//     int i   = -1;
-//     int r01 =  0;
-
-//     int j = -1, k = -1;
-//     int y01 = 0;
-
-//     Vec &feat; // x or g
-
-//     Obs(int i, int r, Vec &x) : i(i), r01(r), feat(x) {}
-//     Obs(int j, int k, int y, Vec &g) : j(j), k(k), y01(y), feat(g) {
-//         is_duel = true;
-//     }
-// };
 
 struct MLEConfig {
     int max_iter            = 50;
@@ -38,9 +21,6 @@ inline Vec project_to_ball(const Vec& v, double S) {
     return (S / n) * v;
 }
 
-// Compute total negative log-likelihood, gradient, Hessian for logistic model over observations:
-// For reward: z = x^T theta, r in {0,1}
-// For duel:   z  = g^T theta, y in {0,1}
 inline double total_nll_grad_hess(
     const std::vector<std::vector<int>>& r01s,
     const std::vector<std::vector<std::vector<int>>> y01s,
@@ -53,7 +33,6 @@ inline double total_nll_grad_hess(
 ) {
     const int d = theta.dim();
 
-    // 复位（如果 Vec/Mat 内部是 std::vector，尽量保证它们已分配好容量）
     grad = Vec(d, 0.0);
     hess = Mat(d, 0.0);
 
@@ -62,7 +41,6 @@ inline double total_nll_grad_hess(
 
     double loss = 0.0;
 
-    // ---- reward 部分 ----
     for (int i = 0; i < inst.K; ++i) {
         const int n0 = r01s[i][0];
         const int n1 = r01s[i][1];
@@ -73,16 +51,13 @@ inline double total_nll_grad_hess(
         const double p = sigmoid(z);
         const double w = mu_prime(z);
 
-        // loss
         loss += inv_zc * ( (double)n1 * nll_logistic(z, 1) + (double)n0 * nll_logistic(z, 0) );
 
-        // grad: (n*p - n1) * x
         const double gcoef = inv_zc * ( (double)n * p - (double)n1 );
         for (int j = 0; j < d; ++j) {
             grad[j] += gcoef * inst.x[i][j];
         }
 
-        // hess: n * w * xx^T
         const double hcoef = inv_zc * (double)n * w;
         for (int a = 0; a < d; ++a) {
             const double xa = inst.x[i][a];
@@ -92,7 +67,6 @@ inline double total_nll_grad_hess(
         }
     }
 
-    // ---- duel 部分 ----
     for (int j = 0; j < inst.K; ++j) {
         for (int k = j + 1; k < inst.K; ++k) {
             const int n0 = y01s[j][k][0];
@@ -163,7 +137,6 @@ inline double total_nll_only(
 }
 
 
-// Projected Newton with backtracking line search for constrained MLE over ||theta||<=S.
 inline Vec constrained_mle_logistic(
     const std::vector<std::vector<int>>& r01s,
     const std::vector<std::vector<std::vector<int>>> y01s,
@@ -177,7 +150,6 @@ inline Vec constrained_mle_logistic(
 ) {
     double prev = 1e100;
 
-    // 复用缓冲区，避免每轮分配
     Vec g(d);
     Mat H(d);
     Vec negg(d);
@@ -192,7 +164,6 @@ inline Vec constrained_mle_logistic(
         if (std::fabs(prev - f) < cfg.tol * (1.0 + std::fabs(f))) break;
         prev = f;
 
-        // Hreg = H + reg I（如果 Mat 复制很贵，可以改成 solve 内部加对角，但先保持简单）
         double reg = 1e-3;
         Mat Hreg = H;
         for (int j = 0; j < d; ++j) Hreg(j,j) += reg;
@@ -200,23 +171,19 @@ inline Vec constrained_mle_logistic(
         for (int j = 0; j < d; ++j) negg[j] = -g[j];
         p = solve_spd_cholesky(Hreg, negg);
 
-        // Armijo: g^T p
         double gTp = 0.0;
         for (int j = 0; j < d; ++j) gTp += g[j] * p[j];
 
-        // 下降性保护
         if (gTp >= 0.0) {
             for (int j = 0; j < d; ++j) p[j] = -g[j];
             gTp = -gnorm * gnorm;
         }
 
-        // backtracking line search (只算 NLL)
         double step = 1.0;
         bool accepted = false;
         const double c1 = 1e-4;
 
         for (;;) {
-            // cand = project_to_ball(theta + step*p, S)
             for (int j = 0; j < d; ++j) cand[j] = theta[j] + step * p[j];
             cand = project_to_ball(cand, S);
 
@@ -232,7 +199,6 @@ inline Vec constrained_mle_logistic(
         }
 
         if (!accepted) {
-            // fallback: small gradient step + projection
             const double eta = 0.1 / (1.0 + it);
             for (int j = 0; j < d; ++j) cand[j] = theta[j] - eta * g[j];
             theta = project_to_ball(cand, S);
