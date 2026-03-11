@@ -38,7 +38,7 @@ You should see `main` in `build/`.
 `instance.txt` is plain text:
 
 * First line: `K d S`
-* Second line: theta* (d numbers)
-* Next K lines: x_i (d numbers per line)
+* Second line: $\theta^\star$ ($d$ numbers)
+* Next $K$ lines: $x_i$ ($d$ numbers per line)
 
 All vectors are stored in Euclidean coordinates.
