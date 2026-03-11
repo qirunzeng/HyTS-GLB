@@ -1,6 +1,6 @@
-# Hybrid GLM Best-Arm Identification (classic + dueling)
+# Hybrid GLM Best-Arm Identification (reward + dueling)
 
-## Build (cmake .. && make)
+## Build
 
 ```bash
 mkdir -p build
@@ -11,9 +11,9 @@ make
 
 You should see `main` in `build/`.
 
-## Quick run (should finish fast)
+## Quick run
 
-## # Batch: generate runs instances, and run 4 algos each time
+### Batch: generate runs instances, and run 4 algos each time
 
 ```bash  
 ./main --mode batch --K 5 --d 4 --S 5.0 --seed 123 --delta 0.05 --max_steps 2000000 --runs 10
