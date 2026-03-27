@@ -9,9 +9,12 @@
 #include "env.h"
 #include "cholesky.h"
 
-inline double beta_t(double delta, int d, double S, double L_t) {
+inline double beta_t(double delta, int d, double S, double L_t, bool printInfo = false) {
     double ct = std::min(1.0, double(d) / (2.0 * S * L_t));
     double val = std::log(1.0/delta) - (double)d * std::log(ct) + 2.0 * S * L_t * ct;
+    if (printInfo) {
+        std::cout << "beta_t: delta=" << delta << ", d=" << d << ", S=" << S << ", L_t=" << L_t << ", ct=" << ct << ", val=" << val << std::endl;
+    }
     return val;
 }
 
@@ -631,6 +634,11 @@ inline RunSummary run_one(
         }
     }
 
+    std::cout << "THETA_HAT: ";
+    for (int i = 0; i < inst.d; ++i) {
+        std::cout << theta_hat[i] << " ";
+    }
+    std::cout << std::endl;
     out.stop_time = t;
     out.c_c = t_c * cfg.cc;
     out.c_d = (t - t_c) * cfg.cd;

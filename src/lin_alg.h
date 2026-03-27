@@ -12,11 +12,13 @@ struct Vec {
 
     double& operator[](int i) { return a[i]; }
     double  operator[](int i) const { return a[i]; }
+    double norm = -1.0;
 
-    double norm2() const {
-        double s = 0.0;
-        for (double x: a) s += x*x;
-        return std::sqrt(s);
+    double norm2() {
+        if (norm >= 0.) return norm;
+        norm = 0.;
+        for (double x: a) norm += x*x;
+        return norm = std::sqrt(norm);
     }
 };
 
@@ -43,6 +45,7 @@ inline double dot(const Vec& x, const Vec& y) {
     for (int i = 0; i < x.dim(); ++i) {
         s += x[i] * y[i];
     }
+    // std::cout << "dot: " << s << std::endl;
     return s;
 }
 
@@ -52,7 +55,7 @@ struct Mat {
 
     explicit Mat(int n_=0, double diag=0.0) : n(n_), a(n_*n_, 0.0) {
         if (diag!=0.0) {
-            for (int i=0;i<n;++i) (*this)(i,i)=diag;
+            for (int i = 0; i < n; ++i) (*this)(i,i) = diag;
         }
     }
     double& operator()(int i,int j) { return a[i*n + j]; }
@@ -67,6 +70,7 @@ inline Mat operator+(const Mat& A, const Mat& B) {
     for (int i=0;i<A.n*A.n;++i) C.a[i]=A.a[i]+B.a[i];
     return C;
 }
+
 inline Mat operator*(double c, const Mat& A) {
     Mat B(A.n);
     for (int i=0;i<A.n*A.n;++i) B.a[i]=c*A.a[i];
@@ -87,7 +91,9 @@ inline Vec mat_vec(const Mat& A, const Vec& x) {
 inline Mat outer(const Vec& x) {
     int d=x.dim();
     Mat A(d);
-    for (int i=0;i<d;++i) for (int j=0;j<d;++j) A(i,j)=x[i]*x[j];
+    for (int i = 0; i < d; ++i) 
+        for (int j = 0; j < d; ++j) 
+            A(i,j) = x[i] * x[j];
     return A;
 }
 

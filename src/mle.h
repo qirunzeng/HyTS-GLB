@@ -14,7 +14,7 @@ struct MLEConfig {
     double min_step         = 1e-6;
 };
 
-inline Vec project_to_ball(const Vec& v, double S) {
+inline Vec project_to_ball(Vec& v, double S) {
     double n = v.norm2();
     if (n <= S) return v;
     if (n < 1e-12) return v;

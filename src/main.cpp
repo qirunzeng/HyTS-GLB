@@ -70,10 +70,12 @@ auto init = [](Instance &inst) -> double {
     for (int i = 0; i < inst.K; ++i) {
         inst.dots[i] = dot(inst.x[i], inst.theta_star);
         inst.means[i] = sigmoid(inst.dots[i]);
+        std::cout << __LINE__ << "<<<<<< " << i << " >>>>>>\n";
         if (inst.dots[i] > max_m) {
             max_m = inst.dots[i];
             inst.best = i;
         }
+        std::cout << "Arm " << i << ": dot = " << inst.dots[i] << ", mean = " << inst.means[i] << "\n";
     }
     double duel_bound = 0.;
     for (int j = 0; j < inst.K; ++j) {
@@ -82,6 +84,7 @@ auto init = [](Instance &inst) -> double {
             inst.gap_dots[j][k] = dot(inst.g[j][k], inst.theta_star);
             duel_bound = std::max(duel_bound, std::sqrt(dot(inst.g[j][k], inst.g[j][k])));
             inst.gaps[j][k] = sigmoid(inst.gap_dots[j][k]);
+            std::cout << "Gap " << j << " vs " << k << ": dot = " << inst.gap_dots[j][k] << ", gap = " << inst.gaps[j][k] << "\n";
         }
     }
     return duel_bound;
@@ -103,6 +106,7 @@ int main(int argc, char** argv) {
     std::unordered_map<std::string,std::string> mp;
     for (int i = 1; i < argc; ++i) {
         std::string key = argv[i];
+        std::cout << "Arg: " << key << std::endl;
         if (key.rfind("--", 0) == 0) {
             std::string val = "1";
             if (i + 1 < argc && std::string(argv[i+1]).rfind("--", 0) != 0) {
@@ -110,8 +114,10 @@ int main(int argc, char** argv) {
                 ++i;
             }
             mp[key] = val;
+            std::cout << "Parsed argument: " << key << " = " << val << std::endl;
         }
     }
+    std::cout << "Parsed " << mp.size() << " arguments.\n";
 
     std::string mode = get(mp, "--mode", "");
     if (mode.empty()) { 
@@ -119,10 +125,72 @@ int main(int argc, char** argv) {
         return 1; 
     }
 
+    std::cout << "Running in mode: " << mode << "\n";
+
     uint64_t seed = (uint64_t)std::stoull(get(mp, "--seed", "1"));
     RNG rng(seed);
 
+    if (mode == "K2d2") {
+        Instance inst = K2d2();
+        std::cout << "Instance K2d2: K = " << inst.K << ", d = " << inst.d << ", S = " << inst.S << "\n";
+        inst.reallocate();
+        init(inst);
+        // RUN HYBRID
+        {
+            HybridConfig cfg;
+            cfg.delta = 0.05;
+            cfg.duel_bound = 2.;
+            cfg.max_steps = 2000000;
+            cfg.get_sc_sd(inst.S);
+            double ave = 0.0;
+            for (int r = 0; r < 10; ++r) {
+                RNG rrng(seed + 10007ull * (uint64_t)r + 17ull);
+                RunSummary rs = run_one(inst, cfg, rrng);
+                ave += rs.stop_time;
+                std::cout << "Hybrid: StopTime = " << rs.stop_time
+                        << ", Right = " << (rs.correct ? 1 : 0) << "\n";
+            }
+            std::cout << "Average StopTime = " << ave / 10.0 << "\n";
+        }
+        // RUN HYBRID-REWARD-ONLY
+        {
+            HybridConfig cfg;
+            cfg.delta = 0.05;
+            cfg.duel_bound = 2.;
+            cfg.max_steps = 2000000;
+            cfg.reward_only = true;
+            cfg.get_sc_sd(inst.S);
+            double ave = 0.0;
+            for (int r = 0; r < 10; ++r) {
+                RNG rrng(seed + 10007ull * (uint64_t)r + 17ull);
+                RunSummary rs = run_one(inst, cfg, rrng);
+                ave += rs.stop_time;
+                std::cout << "Hybrid-Reward-Only: StopTime = " << rs.stop_time
+                        << ", Right = " << (rs.correct ? 1 : 0) << "\n";
+            }
+            std::cout << "Average StopTime = " << ave / 10.0 << "\n";
 
+        }
+        // RUN HYBRID-DUEL-ONLY
+        {
+            HybridConfig cfg;
+            cfg.delta = 0.05;
+            cfg.duel_bound = 2.;
+            cfg.max_steps = 2000000;
+            cfg.duel_only = true;
+            cfg.get_sc_sd(inst.S);
+            double ave = 0.0;
+            for (int r = 0; r < 10; ++r) {
+                RNG rrng(seed + 10007ull * (uint64_t)r + 17ull);
+                RunSummary rs = run_one(inst, cfg, rrng);
+                ave += rs.stop_time;
+                std::cout << "Hybrid-Duel-Only: StopTime = " << rs.stop_time
+                        << ", Right = " << (rs.correct ? 1 : 0) << "\n";
+            }
+            std::cout << "Average StopTime = " << ave / 10.0 << "\n";
+        }
+        return 0;
+    }
 
     if (mode == "gen") {
         int K = geti(mp, "--K", 10);
@@ -531,7 +599,7 @@ int main(int argc, char** argv) {
         std::vector<long long> st_rets;   st_rets.reserve(runs);
         std::vector<long long> st_hyts;   st_hyts.reserve(runs);
 
-        int succ_rage = 0, succ_rand = 0, succ_rets = 0, succ_hyts = 0;
+        int succ_rage_r = 0, succ_rage_duel = 0, succ_rand = 0, succ_rets = 0, succ_hyts = 0;
 
 
         std::filesystem::create_directories("../output");
@@ -613,7 +681,7 @@ int main(int argc, char** argv) {
                 out.close();
                 printf("RaGe-GLM (Reward): Round = %d\n", rs.stop_t);
                 st_rage.push_back(rs.stop_t);
-                succ_rage += (rs.correct ? 1 : 0);
+                succ_rage_r += (rs.correct ? 1 : 0);
 
             }
 
@@ -629,7 +697,7 @@ int main(int argc, char** argv) {
                 out.close();
                 printf("RaGe-GLM (Duel): Round = %d\n", rs.stop_t);
                 st_rage_duel.push_back(rs.stop_t);
-                succ_rage += (rs.correct ? 1 : 0);
+                succ_rage_duel += (rs.correct ? 1 : 0);
             }
 
             {
@@ -700,7 +768,7 @@ int main(int argc, char** argv) {
             if (!out) throw std::runtime_error("cannot open for appending: " + path);
             out << "Average stop time = " << ms.mean
                 << ", StdDev = " << ms.stdev
-                << ", Success rate = " << (runs ? (double)succ_rage / (double)runs : 0.0)
+                << ", Success rate = " << (runs ? (double)succ_rage_r / (double)runs : 0.0)
                 << "\n";
         }
         {
@@ -710,7 +778,7 @@ int main(int argc, char** argv) {
             if (!out) throw std::runtime_error("cannot open for appending: " + path);
             out << "Average stop time = " << ms.mean
                 << ", StdDev = " << ms.stdev
-                << ", Success rate = " << (runs ? (double)succ_rage / (double)runs : 0.0)
+                << ", Success rate = " << (runs ? (double)succ_rage_duel / (double)runs : 0.0)
                 << "\n";
         }
         {
