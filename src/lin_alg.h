@@ -12,13 +12,11 @@ struct Vec {
 
     double& operator[](int i) { return a[i]; }
     double  operator[](int i) const { return a[i]; }
-    double norm = -1.0;
 
-    double norm2() {
-        if (norm >= 0.) return norm;
-        norm = 0.;
-        for (double x: a) norm += x*x;
-        return norm = std::sqrt(norm);
+    double norm2() const {
+        double s = 0.0;
+        for (double x : a) s += x * x;
+        return std::sqrt(s);
     }
 };
 

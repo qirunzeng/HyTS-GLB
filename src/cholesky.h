@@ -3,29 +3,74 @@
 
 struct Chol {
     int n;
-    std::vector<double> L;
+    double *L;
 
-    explicit Chol(int n_=0) : n(n_), L(n_*n_, 0.0) {}
-    double& at(int i,int j) { return L[i*n + j]; }
-    double  at(int i,int j) const { return L[i*n + j]; }
+    explicit Chol(int n_=0) : n(n_), L(nullptr) {
+        if (n_ > 0) {
+            L = new double[n_*n_];
+            std::fill(L, L + n_*n_, 0.0);
+        }
+    }
+
+    ~Chol() { delete[] L; }
+
+    Chol(const Chol&) = delete;
+    Chol& operator=(const Chol&) = delete;
+
+    Chol(Chol&& other) noexcept : n(other.n), L(other.L) {
+        other.L = nullptr;
+        other.n = 0;
+    }
+
+    Chol& operator=(Chol&& other) noexcept {
+        if (this != &other) {
+            delete[] L;
+            n = other.n;
+            L = other.L;
+            other.L = nullptr;
+            other.n = 0;
+        }
+        return *this;
+    }
+
+    inline double& at(int i, int j) {
+        return L[i*n + j];
+    }
+
+    inline const double& at(int i, int j) const {
+        return L[i*n + j];
+    }
 };
 
 inline Chol chol_spd(const Mat& A) {
     int n = A.n;
     Chol C(n);
 
+    double* L = C.L;
+
     for (int i = 0; i < n; ++i) {
+        double* Li = L + i*n;
+
         for (int j = 0; j <= i; ++j) {
+            double* Lj = L + j*n;
+
             double s = A(i,j);
-            for (int k = 0; k < j; ++k) s -= C.at(i,k) * C.at(j,k);
+
+            for (int k = 0; k < j; ++k) {
+                s -= Li[k] * Lj[k];
+            }
+
             if (i == j) {
-                if (s <= 1e-14) throw std::runtime_error("Cholesky failed: not SPD / ill-conditioned");
-                C.at(i,j) = std::sqrt(s);
+                if (s <= 0.0)  // better than 1e-14
+                    throw std::runtime_error("Cholesky failed: not SPD");
+
+                Li[j] = std::sqrt(s);
             } else {
-                C.at(i,j) = s / C.at(j,j);
+                Li[j] = s / Lj[j];
             }
         }
     }
+
     return C;
 }
 

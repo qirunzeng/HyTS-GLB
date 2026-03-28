@@ -130,9 +130,10 @@ int main(int argc, char** argv) {
     uint64_t seed = (uint64_t)std::stoull(get(mp, "--seed", "1"));
     RNG rng(seed);
 
-    if (mode == "K2d2") {
-        Instance inst = K2d2();
-        std::cout << "Instance K2d2: K = " << inst.K << ", d = " << inst.d << ", S = " << inst.S << "\n";
+    if (mode == "K2") {
+        int d = geti(mp, "--d", 2);
+        Instance inst = K2(d);
+        // std::cout << "Instance K2: K = " << inst.K << ", d = " << inst.d << ", S = " << inst.S << "\n";
         inst.reallocate();
         init(inst);
         // RUN HYBRID

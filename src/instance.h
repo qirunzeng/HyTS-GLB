@@ -76,16 +76,26 @@ Vec unit_vec(int d, int i) {
     return ret;
 }
 
-inline Instance K2d2() {
-    Instance inst(2, 2, 2.0);
-    inst.theta_star[0] = 1.0;
-    inst.theta_star[1] = 1.0;
-    inst.x[0][0] = 1.0;
-    inst.x[0][1] = 0.0;
-    inst.x[1][0] = 0;
-    inst.x[1][1] = -1;
+inline Instance K2(int d) {
+    Instance inst(2, d, 2.0);
+    if (d == 2) {
+        inst.theta_star[0] = 1.0;
+        inst.theta_star[1] = 1.0;
+        inst.x[0][0] = 1.0;
+        inst.x[0][1] = 0.0;
+        inst.x[1][0] = 0;
+        inst.x[1][1] = -1;
+    }
+    else if (d == 1) {
+        inst.theta_star[0] = 1.0;
+        inst.x[0][0] = 1.0;
+        inst.x[1][0] = 0.95;
+    }
     return inst;
 }
+
+
+
 
 inline Instance generate_instance(int d, double S) {
     Instance inst(d+1, d, S);

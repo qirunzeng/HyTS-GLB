@@ -15,7 +15,7 @@ struct MLEConfig {
 };
 
 inline Vec project_to_ball(Vec& v, double S) {
-    double n = v.norm2();
+    double n = (v.norm2());
     if (n <= S) return v;
     if (n < 1e-12) return v;
     return (S / n) * v;
@@ -23,7 +23,7 @@ inline Vec project_to_ball(Vec& v, double S) {
 
 inline double total_nll_grad_hess(
     const std::vector<std::vector<int>>& r01s,
-    const std::vector<std::vector<std::vector<int>>> y01s,
+    const std::vector<std::vector<std::vector<int>>>& y01s,
     const Vec& theta,
     Vec& grad,
     Mat& hess,
