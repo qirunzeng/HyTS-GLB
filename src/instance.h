@@ -5,6 +5,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <iomanip>
+#include <cmath>
 #include "lin_alg.h"
 #include "rng.h"
 
@@ -76,28 +77,10 @@ Vec unit_vec(int d, int i) {
     return ret;
 }
 
-inline Instance K2(int d) {
-    Instance inst(2, d, 2.0);
-    if (d == 2) {
-        inst.theta_star[0] = 1.0;
-        inst.theta_star[1] = 1.0;
-        inst.x[0][0] = 1.0;
-        inst.x[0][1] = 0.0;
-        inst.x[1][0] = 0;
-        inst.x[1][1] = -1;
+inline Instance generate_basis_rotated_instance(int d, double S) {
+    if (d < 2) {
+        throw std::runtime_error("generate_basis_rotated_instance requires d >= 2");
     }
-    else if (d == 1) {
-        inst.theta_star[0] = 1.0;
-        inst.x[0][0] = 1.0;
-        inst.x[1][0] = 0.95;
-    }
-    return inst;
-}
-
-
-
-
-inline Instance generate_instance(int d, double S) {
     Instance inst(d+1, d, S);
     inst.theta_star[0] = S-1;
     for (int i = 0; i < d; ++i) {
@@ -106,6 +89,10 @@ inline Instance generate_instance(int d, double S) {
     inst.x[d][0] = std::cos(0.1);
     inst.x[d][1] = std::sin(0.1);
     return inst;
+}
+
+inline Instance generate_instance(int d, double S) {
+    return generate_basis_rotated_instance(d, S);
 }
 
 inline Instance generate_synthetic_instance(int K, int d, double S, RNG& rng) {

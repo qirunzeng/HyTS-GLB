@@ -79,10 +79,10 @@ inline double gamma_d(int d, int teff, double delta) {
     return (double)d + std::log(6.0 * (2.0 + (double)teff) / std::max(1e-300, delta));
 }
 
-inline double max_arm_norm(const Instance& inst) {
+inline double max_action_norm(const std::vector<ObsActionRef>& acts) {
     double L = 0.0;
-    for (int a = 0; a < inst.K; ++a) {
-        L = std::max(L, std::sqrt(dot(inst.x[a], inst.x[a])));
+    for (const ObsActionRef& act : acts) {
+        L = std::max(L, std::sqrt(dot(*act.v, *act.v)));
     }
     return L;
 }
@@ -124,45 +124,103 @@ void epsilon_round_counts(
         s += lambda[a];
     }
     if (s <= 1e-15) {
-        int q = n / K;
-        int r = n % K;
+        const int q = n / K;
+        const int r = n % K;
         for (int a = 0; a < K; ++a) out_counts[a] = q + (a < r ? 1 : 0);
         return;
     }
     for (int a = 0; a < K; ++a) lambda[a] /= s;
 
-    struct Frac { int a; double frac; };
-    std::vector<Frac> fracs;
-    fracs.reserve((size_t)K);
-
-    int used = 0;
+    const double eps = std::max(0.0, eps_round);
+    std::vector<int> lower(K, 0), upper(K, 0);
+    std::vector<double> target(K, 0.0);
+    int lower_sum = 0;
+    int upper_sum = 0;
     for (int a = 0; a < K; ++a) {
-        const double raw = (double)n * lambda[a];
-        const int base = (int)std::floor(raw);
-        out_counts[a] = base;
-        used += base;
-        fracs.push_back({a, raw - (double)base});
+        target[a] = (double)n * lambda[a];
+        lower[a] = (int)std::floor((1.0 - eps) * target[a]);
+        upper[a] = (int)std::ceil((1.0 + eps) * target[a]);
+        lower[a] = std::max(0, std::min(lower[a], n));
+        upper[a] = std::max(lower[a], std::min(upper[a], n));
+        out_counts[a] = lower[a];
+        lower_sum += lower[a];
+        upper_sum += upper[a];
     }
 
-    int rem = n - used;
-    if (rem <= 0) return;
+    if (lower_sum > n) {
+        struct SlackRef { int i; double slack; };
+        std::vector<SlackRef> refs;
+        refs.reserve((size_t)K);
+        for (int a = 0; a < K; ++a) refs.push_back({a, (double)lower[a] - target[a]});
+        std::sort(refs.begin(), refs.end(), [](const SlackRef& u, const SlackRef& v) {
+            return u.slack > v.slack;
+        });
+        int need_drop = lower_sum - n;
+        for (const SlackRef& ref : refs) {
+            if (need_drop <= 0) break;
+            const int dec = std::min(out_counts[ref.i], need_drop);
+            out_counts[ref.i] -= dec;
+            need_drop -= dec;
+        }
+        return;
+    }
 
-    std::sort(fracs.begin(), fracs.end(), [](const Frac& u, const Frac& v) {
+    if (upper_sum < n) {
+        struct DefRef { int i; double def; };
+        std::vector<DefRef> refs;
+        refs.reserve((size_t)K);
+        for (int a = 0; a < K; ++a) refs.push_back({a, target[a] - (double)upper[a]});
+        std::sort(refs.begin(), refs.end(), [](const DefRef& u, const DefRef& v) {
+            return u.def > v.def;
+        });
+        int add = n - upper_sum;
+        for (const DefRef& ref : refs) {
+            if (add <= 0) break;
+            out_counts[ref.i] += 1;
+            --add;
+        }
+        if (add > 0) out_counts[0] += add;
+        return;
+    }
+
+    int rem = n - lower_sum;
+    if (rem == 0) return;
+
+    struct FracRef {
+        int i;
+        double frac;
+        double deficit;
+    };
+    std::vector<FracRef> refs;
+    refs.reserve((size_t)K);
+    for (int a = 0; a < K; ++a) {
+        refs.push_back({a, target[a] - std::floor(target[a]), target[a] - (double)lower[a]});
+    }
+    std::sort(refs.begin(), refs.end(), [](const FracRef& u, const FracRef& v) {
+        if (u.deficit != v.deficit) return u.deficit > v.deficit;
         return u.frac > v.frac;
     });
-    for (int i = 0; i < rem; ++i) {
-        out_counts[fracs[i % K].a] += 1;
-    }
 
-    int sum = 0;
-    for (int c : out_counts) sum += c;
-    if (sum != n) {
-        int diff = n - sum;
-        if (diff > 0) out_counts[0] += diff;
-        else if (diff < 0) out_counts[0] = std::max(0, out_counts[0] + diff);
+    while (rem > 0) {
+        bool progressed = false;
+        for (const FracRef& ref : refs) {
+            if (rem <= 0) break;
+            const int i = ref.i;
+            if (out_counts[i] < upper[i]) {
+                ++out_counts[i];
+                --rem;
+                progressed = true;
+            }
+        }
+        if (!progressed) {
+            for (int a = 0; a < K && rem > 0; ++a) {
+                if (out_counts[a] < n) {
+                    ++out_counts[a];
+                    --rem;
+                }
+            }
+        }
     }
-
-    (void)eps_round; 
 }
 
 
@@ -235,12 +293,16 @@ std::vector<double> approx_fw_design(
     const Instance& inst,
     const std::vector<ObsActionRef>& acts,
     const std::vector<Vec>& D,
+    const std::vector<double>& D_weight,
     const Vec& theta_prev,
     int iters,
     double ridge
 ) {
     const int M = (int)acts.size();
     if (M <= 0) return {};
+    if (D.empty() || D.size() != D_weight.size()) {
+        throw std::runtime_error("approx_fw_design: invalid design objective");
+    }
 
     std::vector<double> lambda(M, 1.0 / (double)M);
     std::vector<double> curv(M, 0.0);
@@ -252,12 +314,13 @@ std::vector<double> approx_fw_design(
         Mat H = fisher_matrix_from_lambda_curv(inst.d, acts, lambda, curv, ridge);
 
         int worst_i = 0;
-        double worstv = quad_form_inv_spd(H, D[0]);
+        double worstv = D_weight[0] * quad_form_inv_spd(H, D[0]);
         for (int i = 1; i < (int)D.size(); ++i) {
-            const double v = quad_form_inv_spd(H, D[i]);
+            const double v = D_weight[i] * quad_form_inv_spd(H, D[i]);
             if (v > worstv) { worstv = v; worst_i = i; }
         }
         const Vec& y = D[worst_i];
+        const double y_weight = D_weight[worst_i];
         Vec v = solve_spd_cholesky(H, y);
 
         int best_m = 0;
@@ -265,7 +328,7 @@ std::vector<double> approx_fw_design(
         for (int m = 0; m < M; ++m) {
             const Vec& x = *acts[m].v;
             const double ip = dot(x, v);
-            const double score = curv[m] * ip * ip;
+            const double score = y_weight * curv[m] * ip * ip;
             if (score > best_score) { best_score = score; best_m = m; }
         }
 
@@ -291,29 +354,47 @@ std::vector<double> approx_burnin_design(
     double ridge
 ) {
     std::vector<Vec> D;
+    std::vector<double> D_weight;
     D.reserve(acts.size());
-    for (const ObsActionRef& act : acts) D.push_back(*act.v);
+    D_weight.reserve(acts.size());
+    for (const ObsActionRef& act : acts) {
+        D.push_back(*act.v);
+        D_weight.push_back(1.0);
+    }
     Vec theta0(inst.d, 0.0);
-    return approx_fw_design(inst, acts, D, theta0, iters, ridge);
+    return approx_fw_design(inst, acts, D, D_weight, theta0, iters, ridge);
 }
 
 std::vector<double> approx_rage_design(
     const Instance& inst,
     const std::vector<ObsActionRef>& acts,
     const std::vector<int>& active,
-    int zhat,
+    int round_k,
+    double gamma,
     const Vec& theta_prev,
     int iters,
     double ridge
 ) {
     std::vector<Vec> D;
-    D.reserve((size_t)inst.K + active.size());
-    for (int a = 0; a < inst.K; ++a) D.push_back(inst.x[a]);
-    for (int idx : active) {
-        if (idx == zhat) continue;
-        D.push_back(inst.x[zhat] - inst.x[idx]);
+    std::vector<double> D_weight;
+    const double diff_weight = std::pow(2.0, 2.0 * (double)round_k) * 3.5 * 3.5;
+
+    D.reserve(acts.size() + active.size() * active.size());
+    D_weight.reserve(acts.size() + active.size() * active.size());
+    for (const ObsActionRef& act : acts) {
+        D.push_back(*act.v);
+        D_weight.push_back(gamma);
     }
-    return approx_fw_design(inst, acts, D, theta_prev, iters, ridge);
+
+    for (int ii = 0; ii < (int)active.size(); ++ii) {
+        for (int jj = ii + 1; jj < (int)active.size(); ++jj) {
+            const int a = active[ii];
+            const int b = active[jj];
+            D.push_back(inst.x[a] - inst.x[b]);
+            D_weight.push_back(diff_weight);
+        }
+    }
+    return approx_fw_design(inst, acts, D, D_weight, theta_prev, iters, ridge);
 }
 RAGEGLMResult run_rageglm_baseline(
     Instance& inst,
@@ -331,7 +412,7 @@ RAGEGLMResult run_rageglm_baseline(
     const std::vector<ObsActionRef> acts = build_all_actions(inst, cfg.include_reward, cfg.include_dueling_pairs_as_actions);
     const int M = (int)acts.size();
 
-    const double L = max_arm_norm(inst);
+    const double L = max_action_norm(acts);
     const double kappa0 = mu_prime(L * inst.S);
     const double kappa0_inv = 1.0 / std::max(1e-12, kappa0);
 
@@ -399,9 +480,7 @@ RAGEGLMResult run_rageglm_baseline(
         double denom = 2.0 * (double)k * (double)k * (double)union_size * (2.0 + (double)x_size);
         const double delta_k = cfg.delta / std::max(1.0, denom);
 
-        const int z_hat = argmax_z_active(inst, theta_hat, active);
-
-        std::vector<double> lambda = approx_rage_design(inst, acts, active, z_hat, theta_hat, cfg.fw_iters, cfg.ridge);
+        std::vector<double> lambda = approx_rage_design(inst, acts, active, k, gd, theta_hat, cfg.fw_iters, cfg.ridge);
 
         Mat H = fisher_matrix_from_lambda(inst, acts, lambda, theta_hat, cfg.ridge);
 
@@ -477,11 +556,10 @@ RAGEGLMResult run_rageglm_baseline(
         active.swap(next_active);
 
         k++;
-        if (k > 60) break;
     }
 
     RAGEGLMResult res;
-    res.hat_arm = (active.empty() ? argmax_z_all(inst, theta_hat) : active[0]);
+    res.hat_arm = (active.empty() ? argmax_z_all(inst, theta_hat) : argmax_z_active(inst, theta_hat, active));
     res.stop_t = t;
     res.correct = (res.hat_arm == inst.true_best_arm());
     res.rounds = k - 1;

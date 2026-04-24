@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <iostream>
+#include <algorithm>
 #include "lin_alg.h"
 #include "rng.h"
 #include "mle.h"
@@ -58,6 +59,47 @@ struct RunSummary {
     bool correct = false;
 };
 
+struct PairAction {
+    int j = 0;
+    int k = 1;
+};
+
+inline std::vector<PairAction> build_pair_actions(int K);
+
+struct HybridState {
+    std::vector<PairAction> pairs;
+    std::vector<int> Nc;
+    std::vector<int> Nd;
+    std::vector<double> W_arm;
+    std::vector<double> W_pair;
+    std::vector<double> w_arm;
+    std::vector<double> w_pair;
+    std::vector<double> curv_arm;
+    std::vector<double> curv_pair;
+
+    explicit HybridState(int K)
+        : pairs(build_pair_actions(K)),
+          Nc(K, 0),
+          Nd(pairs.size(), 0),
+          W_arm(K, 0.0),
+          W_pair(pairs.size(), 0.0),
+          w_arm(K, 0.0),
+          w_pair(pairs.size(), 0.0),
+          curv_arm(K, 0.0),
+          curv_pair(pairs.size(), 0.0) {}
+};
+
+inline std::vector<PairAction> build_pair_actions(int K) {
+    std::vector<PairAction> pairs;
+    pairs.reserve((size_t)K * (size_t)(K - 1) / 2);
+    for (int j = 0; j < K; ++j) {
+        for (int k = j + 1; k < K; ++k) {
+            pairs.push_back({j, k});
+        }
+    }
+    return pairs;
+}
+
 inline Mat hessian_classic_only(const std::vector<int>& Nc, const Vec& theta_hat, double zeta_c, const Instance& inst) {
     Mat H(inst.d, 0.0);
     for (int i = 0; i < inst.K; ++i) {
@@ -92,6 +134,30 @@ inline Mat hessian_duel_only(const std::vector<std::vector<int>>& Nd, const Vec&
     return H;
 }
 
+inline Mat hessian_duel_only_flat(
+    const std::vector<int>& Nd,
+    const std::vector<PairAction>& pairs,
+    const Vec& theta_hat,
+    double zeta_d,
+    const Instance& inst
+) {
+    Mat H(inst.d, 0.0);
+    for (int p = 0; p < (int)pairs.size(); ++p) {
+        if (Nd[p] == 0) continue;
+        const int j = pairs[p].j;
+        const int k = pairs[p].k;
+        const Vec& g = inst.g[j][k];
+        double coef = (double)Nd[p] * mu_prime(dot(g, theta_hat)) / zeta_d;
+        for (int a = 0; a < inst.d; ++a) {
+            const double ga = g[a];
+            for (int b = 0; b < inst.d; ++b) {
+                H(a,b) += coef * ga * g[b];
+            }
+        }
+    }
+    return H;
+}
+
 inline Mat info_matrix_A(
     const Mat& Hc,
     const Mat& Hd,
@@ -107,14 +173,6 @@ inline Mat info_matrix_A(
         A.a[i] = ac * Hc.a[i] + ad * Hd.a[i];
     }
     return A;
-}
-
-inline int argmax_score(const std::vector<double>& v) {
-    int id = 0;
-    for (int i = 1; i < (int)v.size(); ++i) if (v[i] > v[id]) {
-        id = i;
-    }
-    return id;
 }
 
 inline int predicted_best_arm(const Instance& inst, const Vec& theta_hat) {
@@ -156,38 +214,15 @@ inline bool stop_condition(
     return ret;
 }
 
-inline int worst_competitor(
-    const Instance& inst,
-    const Vec& theta_hat,
-    const Mat& A,
-    double beta
-) {
-    int ihat = predicted_best_arm(inst, theta_hat);
-
-    int worst = -1;
-    double bestScore = -1.0;
-
-    for (int i = 0; i < inst.K; ++i) if (i != ihat) {
-        Vec g = inst.x[ihat] - inst.x[i];
-        double mean_gap = std::max(1e-9, dot(g, theta_hat));
-        double q = quad_form_inv_spd(A, g);
-        double rad = std::sqrt(std::max(0.0, beta * q));
-        double score = rad / mean_gap;
-        if (score > bestScore) { bestScore = score; worst = i; }
-    }
-    if (worst < 0) worst = (ihat==0?1:0);
-    return worst;
-}
-
-
-inline Mat compute_A_of_w(
+inline Mat compute_A_of_w_flat(
     const Instance& inst,
     const Vec& theta_hat,
     const HybridConfig& cfg,
+    const std::vector<PairAction>& pairs,
     const std::vector<double>& w_arm,
-    const std::vector<std::vector<double>>& w_pair,
+    const std::vector<double>& w_pair,
     const std::vector<double>* curv_arm_cache = nullptr,
-    const std::vector<std::vector<double>>* curv_pair_cache = nullptr
+    const std::vector<double>* curv_pair_cache = nullptr
 ) {
     int d = inst.d;
     int K = inst.K;
@@ -198,37 +233,30 @@ inline Mat compute_A_of_w(
     Mat A(d, cfg.lambda * (wc + wd));
 
     for (int i = 0; i < K; ++i) {
-        double wi = w_arm[i];
+        const double wi = w_arm[i];
         if (wi <= 0.0) continue;
-        double curv = 0.0;
-        if (curv_arm_cache) {
-            curv = (*curv_arm_cache)[i];
-        } else {
-            double z = dot(inst.x[i], theta_hat);
-            curv = mu_prime(z) / cfg.zeta_c;
-        }
+        const double curv = curv_arm_cache ? (*curv_arm_cache)[i] : mu_prime(dot(inst.x[i], theta_hat)) / cfg.zeta_c;
         const double coef = wc * wi * curv;
-        for (int a = 0; a < d; ++a) for (int b = 0; b < d; ++b)
-            A(a,b) += coef * inst.x[i][a] * inst.x[i][b];
+        for (int a = 0; a < d; ++a) {
+            const double xa = inst.x[i][a];
+            for (int b = 0; b < d; ++b) {
+                A(a,b) += coef * xa * inst.x[i][b];
+            }
+        }
     }
 
-    for (int j = 0; j < K; ++j) {
-        for (int k = j + 1; k < K; ++k) {
-            double wjk = w_pair[j][k];
-            if (wjk <= 0.0) continue;
-            const Vec& g = inst.g[j][k];
-            double curv = 0.0;
-            if (curv_pair_cache) {
-                curv = (*curv_pair_cache)[j][k];
-            } else {
-                double z = dot(g, theta_hat);
-                curv = mu_prime(z) / cfg.zeta_d;
-            }
-            const double coef = wd * wjk * curv;
-            for (int a = 0; a < d; ++a) {
-                for (int b = 0; b < d; ++b) {
-                    A(a,b) += coef * g[a] * g[b];
-                }
+    for (int p = 0; p < (int)pairs.size(); ++p) {
+        const double wp = w_pair[p];
+        if (wp <= 0.0) continue;
+        const int j = pairs[p].j;
+        const int k = pairs[p].k;
+        const Vec& g = inst.g[j][k];
+        const double curv = curv_pair_cache ? (*curv_pair_cache)[p] : mu_prime(dot(g, theta_hat)) / cfg.zeta_d;
+        const double coef = wd * wp * curv;
+        for (int a = 0; a < d; ++a) {
+            const double ga = g[a];
+            for (int b = 0; b < d; ++b) {
+                A(a,b) += coef * ga * g[b];
             }
         }
     }
@@ -236,78 +264,67 @@ inline Mat compute_A_of_w(
 }
 
 
-static void compute_optimal_proportions_track_stop(
+static void compute_optimal_proportions_track_stop_flat(
     const Instance& inst,
     const Vec& theta_hat,
     const HybridConfig& cfg,
+    const std::vector<PairAction>& pairs,
     std::vector<double>& w_arm,
-    std::vector<std::vector<double>>& w_pair
+    std::vector<double>& w_pair,
+    std::vector<double>& curv_arm,
+    std::vector<double>& curv_pair
 ) {
     const int K = inst.K;
+    const int P = (int)pairs.size();
 
-    for (int i = 0; i < K; ++i) w_arm[i] = 0.0;
-    for (int j = 0; j < K; ++j) for (int k = 0; k < K; ++k) w_pair[j][k] = 0.0;
-
-    const int P = K * (K - 1) / 2;
+    std::fill(w_arm.begin(), w_arm.end(), 0.0);
+    std::fill(w_pair.begin(), w_pair.end(), 0.0);
 
     if (cfg.reward_only) {
         const double mass_arm = 1.0 / (double)K;
-        for (int i = 0; i < K; ++i) w_arm[i] = mass_arm;
+        std::fill(w_arm.begin(), w_arm.end(), mass_arm);
     } else if (cfg.duel_only) {
         const double mass_pair = 1.0 / (double)P;
-        for (int j = 0; j < K; ++j)
-            for (int k = j + 1; k < K; ++k)
-                w_pair[j][k] = mass_pair;
+        std::fill(w_pair.begin(), w_pair.end(), mass_pair);
     } else {
         const double mass = 1.0 / (double)(K + P);
-        for (int i = 0; i < K; ++i) {
-            w_arm[i] = mass;
-        }
-        for (int j = 0; j < K; ++j) {
-            for (int k = j + 1; k < K; ++k) {
-                w_pair[j][k] = mass;
-            }
-        }
+        std::fill(w_arm.begin(), w_arm.end(), mass);
+        std::fill(w_pair.begin(), w_pair.end(), mass);
     }
 
     const int ihat = predicted_best_arm(inst, theta_hat);
 
-    std::vector<double> curv_arm;
-    std::vector<std::vector<double>> curv_pair;
-
+    std::fill(curv_arm.begin(), curv_arm.end(), 0.0);
     if (!cfg.duel_only) {
-        curv_arm.resize(K);
         for (int i = 0; i < K; ++i) {
-            const double z = dot(inst.x[i], theta_hat);
-            curv_arm[i] = mu_prime(z) / cfg.zeta_c;
+            curv_arm[i] = mu_prime(dot(inst.x[i], theta_hat)) / cfg.zeta_c;
         }
     }
+
+    std::fill(curv_pair.begin(), curv_pair.end(), 0.0);
     if (!cfg.reward_only) {
-        curv_pair.assign(K, std::vector<double>(K, 0.0));
-        for (int j = 0; j < K; ++j) {
-            for (int k = j + 1; k < K; ++k) {
-                const double z = dot(inst.g[j][k], theta_hat);
-                curv_pair[j][k] = mu_prime(z) / cfg.zeta_d;
-            }
+        for (int p = 0; p < P; ++p) {
+            const int j = pairs[p].j;
+            const int k = pairs[p].k;
+            curv_pair[p] = mu_prime(dot(inst.g[j][k], theta_hat)) / cfg.zeta_d;
         }
     }
 
     for (int m = 0; m < cfg.fw_iters; ++m) {
-        Mat A = compute_A_of_w(inst, theta_hat, cfg, w_arm, w_pair, &curv_arm, &curv_pair);
-
+        Mat A = compute_A_of_w_flat(inst, theta_hat, cfg, pairs, w_arm, w_pair, &curv_arm, &curv_pair);
         Chol L = chol_spd(A);
 
         int idag = -1;
         double best_val = -1.0;
-
         for (int i = 0; i < K; ++i) if (i != ihat) {
             const double val = quad_form_inv_chol(L, inst.g[ihat][i]);
-            if (val > best_val) { 
-                best_val = val; 
-                idag = i; 
+            if (val > best_val) {
+                best_val = val;
+                idag = i;
             }
         }
         if (idag < 0) return;
+
         Vec u = solve_chol(L, inst.g[ihat][idag]);
 
         int i_star = 0;
@@ -315,26 +332,25 @@ static void compute_optimal_proportions_track_stop(
         if (!cfg.duel_only) {
             for (int i = 0; i < K; ++i) {
                 const double proj = dot(inst.x[i], u);
-                const double sc = cfg.sc * curv_arm[i] * (proj * proj);
-                if (sc > sc_best) { 
-                    sc_best = sc; 
-                    i_star = i; 
+                const double sc = cfg.sc * curv_arm[i] * proj * proj;
+                if (sc > sc_best) {
+                    sc_best = sc;
+                    i_star = i;
                 }
             }
         }
 
-        int j_star = 0, k_star = 1;
+        int p_star = 0;
         double sd_best = -1.0;
         if (!cfg.reward_only) {
-            for (int j = 0; j < K; ++j) {
-                for (int k = j + 1; k < K; ++k) {
-                    const double proj = dot(inst.g[j][k], u);
-                    const double sd = cfg.sd * curv_pair[j][k] * (proj * proj);
-                    if (sd > sd_best) { 
-                        sd_best = sd; 
-                        j_star = j; 
-                        k_star = k; 
-                    }
+            for (int p = 0; p < P; ++p) {
+                const int j = pairs[p].j;
+                const int k = pairs[p].k;
+                const double proj = dot(inst.g[j][k], u);
+                const double sd = cfg.sd * curv_pair[p] * proj * proj;
+                if (sd > sd_best) {
+                    sd_best = sd;
+                    p_star = p;
                 }
             }
         }
@@ -342,91 +358,75 @@ static void compute_optimal_proportions_track_stop(
         const double gamma = 2.0 / (double)(m + 2);
         const double one_minus = 1.0 - gamma;
 
-        for (int i = 0; i < K; ++i) w_arm[i] *= one_minus;
-        for (int j = 0; j < K; ++j) for (int k = j + 1; k < K; ++k) w_pair[j][k] *= one_minus;
+        for (double& w : w_arm) w *= one_minus;
+        for (double& w : w_pair) w *= one_minus;
 
-        if (sc_best >= sd_best) {
-            w_arm[i_star] += gamma;
-        } else {
-            w_pair[j_star][k_star] += gamma;
-        }
+        if (sc_best >= sd_best) w_arm[i_star] += gamma;
+        else                    w_pair[p_star] += gamma;
     }
 
     double sum = 0.0;
-    for (int i = 0; i < K; ++i) sum += w_arm[i];
-    for (int j = 0; j < K; ++j) for (int k = j + 1; k < K; ++k) sum += w_pair[j][k];
-
+    for (double w : w_arm) sum += w;
+    for (double w : w_pair) sum += w;
     if (sum > 0) {
         const double inv = 1.0 / sum;
-        for (int i = 0; i < K; ++i) w_arm[i] *= inv;
-        for (int j = 0; j < K; ++j) for (int k = j + 1; k < K; ++k) w_pair[j][k] *= inv;
+        for (double& w : w_arm) w *= inv;
+        for (double& w : w_pair) w *= inv;
     }
 }
 
-
-static void cost_optimal_proportions_track_stop(
+static void cost_optimal_proportions_track_stop_flat(
     const Instance& inst,
     const Vec& theta_hat,
     const HybridConfig& cfg,
+    const std::vector<PairAction>& pairs,
     std::vector<double>& w_arm,
-    std::vector<std::vector<double>>& w_pair
+    std::vector<double>& w_pair,
+    std::vector<double>& curv_arm,
+    std::vector<double>& curv_pair
 ) {
     const int K = inst.K;
-
-    for (int i = 0; i < K; ++i) w_arm[i] = 0.0;
-    for (int j = 0; j < K; ++j) for (int k = 0; k < K; ++k) w_pair[j][k] = 0.0;
+    const int P = (int)pairs.size();
 
     const double inv_cc = 1.0 / std::max(1e-12, cfg.cc);
     const double inv_cd = 1.0 / std::max(1e-12, cfg.cd);
 
-    for (int i = 0; i < K; ++i) w_arm[i] = inv_cc;
-    for (int j = 0; j < K; ++j) {
-        for (int k = j + 1; k < K; ++k) {
-            w_pair[j][k] = inv_cd;
-        }
-    }
+    std::fill(w_arm.begin(), w_arm.end(), inv_cc);
+    std::fill(w_pair.begin(), w_pair.end(), inv_cd);
 
     double sum0 = 0.0;
-    for (int i = 0; i < K; ++i) {
-        sum0 += w_arm[i];
-    }
-    for (int j = 0; j < K; ++j) {
-        for (int k = j + 1; k < K; ++k) {
-            sum0 += w_pair[j][k];
-        }
-    }
-
+    for (double w : w_arm) sum0 += w;
+    for (double w : w_pair) sum0 += w;
     if (sum0 > 0) {
         const double inv = 1.0 / sum0;
-        for (int i = 0; i < K; ++i) w_arm[i] *= inv;
-        for (int j = 0; j < K; ++j) for (int k = j + 1; k < K; ++k) w_pair[j][k] *= inv;
+        for (double& w : w_arm) w *= inv;
+        for (double& w : w_pair) w *= inv;
     }
 
     const int ihat = predicted_best_arm(inst, theta_hat);
 
-    std::vector<double> curv_arm(K, 0.0);
     for (int i = 0; i < K; ++i) {
-        const double z = dot(inst.x[i], theta_hat);
-        curv_arm[i] = mu_prime(z) / cfg.zeta_c;
+        curv_arm[i] = mu_prime(dot(inst.x[i], theta_hat)) / cfg.zeta_c;
     }
 
-    std::vector<std::vector<double>> curv_pair(K, std::vector<double>(K, 0.0));
-    for (int j = 0; j < K; ++j) {
-        for (int k = j + 1; k < K; ++k) {
-            const double z = dot(inst.g[j][k], theta_hat);
-            curv_pair[j][k] = mu_prime(z) / cfg.zeta_d;
-        }
+    for (int p = 0; p < P; ++p) {
+        const int j = pairs[p].j;
+        const int k = pairs[p].k;
+        curv_pair[p] = mu_prime(dot(inst.g[j][k], theta_hat)) / cfg.zeta_d;
     }
 
     for (int m = 0; m < cfg.fw_iters; ++m) {
-        Mat A = compute_A_of_w(inst, theta_hat, cfg, w_arm, w_pair, &curv_arm, &curv_pair);
+        Mat A = compute_A_of_w_flat(inst, theta_hat, cfg, pairs, w_arm, w_pair, &curv_arm, &curv_pair);
         Chol L = chol_spd(A);
 
         int idag = -1;
         double best_val = -1.0;
         for (int i = 0; i < K; ++i) if (i != ihat) {
             const double val = quad_form_inv_chol(L, inst.g[ihat][i]);
-            if (val > best_val) { best_val = val; idag = i; }
+            if (val > best_val) {
+                best_val = val;
+                idag = i;
+            }
         }
         if (idag < 0) return;
 
@@ -436,41 +436,46 @@ static void cost_optimal_proportions_track_stop(
         double sc_best = -1.0;
         for (int i = 0; i < K; ++i) {
             const double proj = dot(inst.x[i], u);
-            const double sc = cfg.sc * curv_arm[i] * (proj * proj);
-            if (sc > sc_best) { sc_best = sc; i_star = i; }
+            const double sc = cfg.sc * curv_arm[i] * proj * proj;
+            if (sc > sc_best) {
+                sc_best = sc;
+                i_star = i;
+            }
         }
 
-        int j_star = 0, k_star = 1;
+        int p_star = 0;
         double sd_best = -1.0;
-        for (int j = 0; j < K; ++j) {
-            for (int k = j + 1; k < K; ++k) {
-                const double proj = dot(inst.g[j][k], u);
-                const double sd = cfg.sd * curv_pair[j][k] * (proj * proj);
-                if (sd > sd_best) { sd_best = sd; j_star = j; k_star = k; }
+        for (int p = 0; p < P; ++p) {
+            const int j = pairs[p].j;
+            const int k = pairs[p].k;
+            const double proj = dot(inst.g[j][k], u);
+            const double sd = cfg.sd * curv_pair[p] * proj * proj;
+            if (sd > sd_best) {
+                sd_best = sd;
+                p_star = p;
             }
         }
 
         const double gamma = 2.0 / (double)(m + 2);
         const double one_minus = 1.0 - gamma;
 
-        for (int i = 0; i < K; ++i) w_arm[i] *= one_minus;
-        for (int j = 0; j < K; ++j) for (int k = j + 1; k < K; ++k) w_pair[j][k] *= one_minus;
+        for (double& w : w_arm) w *= one_minus;
+        for (double& w : w_pair) w *= one_minus;
 
         const double eff_sc = sc_best / std::max(1e-12, cfg.cc);
         const double eff_sd = sd_best / std::max(1e-12, cfg.cd);
 
         if (eff_sc >= eff_sd) w_arm[i_star] += gamma;
-        else                  w_pair[j_star][k_star] += gamma;
+        else                  w_pair[p_star] += gamma;
     }
 
     double sum = 0.0;
-    for (int i = 0; i < K; ++i) sum += w_arm[i];
-    for (int j = 0; j < K; ++j) for (int k = j + 1; k < K; ++k) sum += w_pair[j][k];
-
+    for (double w : w_arm) sum += w;
+    for (double w : w_pair) sum += w;
     if (sum > 0) {
         const double inv = 1.0 / sum;
-        for (int i = 0; i < K; ++i) w_arm[i] *= inv;
-        for (int j = 0; j < K; ++j) for (int k = j + 1; k < K; ++k) w_pair[j][k] *= inv;
+        for (double& w : w_arm) w *= inv;
+        for (double& w : w_pair) w *= inv;
     }
 }
 
@@ -483,15 +488,9 @@ inline RunSummary run_cost(
     RunSummary out;
     out.true_best = inst.true_best_arm();
 
-    std::vector<int> Nc(inst.K, 0);
-    std::vector<std::vector<int>> Nd(inst.K, std::vector<int>(inst.K, 0));
+    HybridState state(inst.K);
 
     Vec theta_hat(inst.d, 0.0);
-
-    std::vector<double> W_arm(inst.K, 0.0);
-    std::vector<std::vector<double>> W_pair(inst.K, std::vector<double>(inst.K, 0.0));
-    std::vector<double> w_arm(inst.K, 0.0);
-    std::vector<std::vector<double>> w_pair(inst.K, std::vector<double>(inst.K, 0.0));
     bool have_design = false;
 
     
@@ -508,7 +507,7 @@ inline RunSummary run_cost(
         int a = t % inst.K;
         int r = sample_reward(inst, a, rng);
         r01s[a][r]++;
-        Nc[a]++;
+        state.Nc[a]++;
     }
 
     for (; t < cfg.max_steps; ++t) {
@@ -518,8 +517,8 @@ inline RunSummary run_cost(
         if (do_update) {
             theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
 
-            Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
-            Mat Hd = hessian_duel_only(Nd, theta_hat, cfg.zeta_d, inst);
+            Mat Hc = hessian_classic_only(state.Nc, theta_hat, cfg.zeta_c, inst);
+            Mat Hd = hessian_duel_only_flat(state.Nd, state.pairs, theta_hat, cfg.zeta_d, inst);
             Mat A  = info_matrix_A(Hc, Hd, inst.S, cfg.Rs_c, cfg.Rs_d, cfg.duel_bound) + Mat(inst.d, cfg.lambda);
 
             double Lt = lipschitz_Lt_bernoulli(t_c, t - t_c, inst.S);
@@ -529,34 +528,35 @@ inline RunSummary run_cost(
                 break;
             }
 
-            cost_optimal_proportions_track_stop(inst, theta_hat, cfg, w_arm, w_pair);
+            cost_optimal_proportions_track_stop_flat(
+                inst, theta_hat, cfg, state.pairs,
+                state.w_arm, state.w_pair,
+                state.curv_arm, state.curv_pair
+            );
             have_design = true;
         }
         for (int i = 0; i < inst.K; ++i) {
-            W_arm[i] += w_arm[i];
+            state.W_arm[i] += state.w_arm[i];
         }
-        for (int j = 0; j < inst.K; ++j) {
-            for (int k = j + 1; k < inst.K; ++k) {
-                W_pair[j][k] += w_pair[j][k];
-            }
+        for (int p = 0; p < (int)state.pairs.size(); ++p) {
+            state.W_pair[p] += state.w_pair[p];
         }
 
         int best_i = 0;
-        double best_val = (double)Nc[0] - W_arm[0];
+        double best_val = (double)state.Nc[0] - state.W_arm[0];
         for (int i = 1; i < inst.K; ++i) {
-            if (double v = (double)Nc[i] - W_arm[i]; v < best_val) { 
+            if (double v = (double)state.Nc[i] - state.W_arm[i]; v < best_val) { 
                 best_val = v; 
                 best_i = i;
             }
         }
 
-        int best_j = 0, best_k = 1;
-        double best_duel_val = (double)Nd[0][1] - W_pair[0][1];
-        for (int j = 0; j < inst.K; ++j) for (int k = j + 1; k < inst.K; ++k) {
-            if (double v = (double)Nd[j][k] - W_pair[j][k]; v < best_duel_val) { 
-                best_duel_val = v; 
-                best_j = j;
-                best_k = k;
+        int best_p = 0;
+        double best_duel_val = (double)state.Nd[0] - state.W_pair[0];
+        for (int p = 1; p < (int)state.pairs.size(); ++p) {
+            if (double v = (double)state.Nd[p] - state.W_pair[p]; v < best_duel_val) {
+                best_duel_val = v;
+                best_p = p;
             }
         }
 
@@ -565,11 +565,13 @@ inline RunSummary run_cost(
         if (!do_duel) {
             int r = sample_reward(inst, best_i, rng);
             r01s[best_i][r]++;
-            Nc[best_i]++; t_c++;
+            state.Nc[best_i]++; t_c++;
         } else {
+            const int best_j = state.pairs[best_p].j;
+            const int best_k = state.pairs[best_p].k;
             int y = sample_duel_outcome(inst, best_j, best_k, rng);
             y01s[best_j][best_k][y]++;
-            Nd[best_j][best_k]++;
+            state.Nd[best_p]++;
         }
     }
 
@@ -590,15 +592,9 @@ inline RunSummary run_one(
     RunSummary out;
     out.true_best = inst.true_best_arm();
 
-    std::vector<int> Nc(inst.K, 0);
-    std::vector<std::vector<int>> Nd(inst.K, std::vector<int>(inst.K, 0));
+    HybridState state(inst.K);
 
     Vec theta_hat(inst.d, 0.0);
-
-    std::vector<double> W_arm(inst.K, 0.0);
-    std::vector<std::vector<double>> W_pair(inst.K, std::vector<double>(inst.K, 0.0));
-    std::vector<double> w_arm(inst.K, 0.0);
-    std::vector<std::vector<double>> w_pair(inst.K, std::vector<double>(inst.K, 0.0));
     bool have_design = false;
 
     
@@ -614,7 +610,7 @@ inline RunSummary run_one(
         int a = t % inst.K;
         int r = sample_reward(inst, a, rng);
         r01s[a][r]++;
-        Nc[a]++;
+        state.Nc[a]++;
     }
 
 
@@ -625,8 +621,8 @@ inline RunSummary run_one(
         if (do_update) {
             theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
 
-            Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
-            Mat Hd = hessian_duel_only(Nd, theta_hat, cfg.zeta_d, inst);
+            Mat Hc = hessian_classic_only(state.Nc, theta_hat, cfg.zeta_c, inst);
+            Mat Hd = hessian_duel_only_flat(state.Nd, state.pairs, theta_hat, cfg.zeta_d, inst);
             Mat A  = info_matrix_A(Hc, Hd, inst.S, cfg.Rs_c, cfg.Rs_d, cfg.duel_bound) + Mat(inst.d, cfg.lambda);
 
             double Lt = lipschitz_Lt_bernoulli(t_c, t - t_c, inst.S);
@@ -636,34 +632,35 @@ inline RunSummary run_one(
                 break;
             }
 
-            compute_optimal_proportions_track_stop(inst, theta_hat, cfg, w_arm, w_pair);
+            compute_optimal_proportions_track_stop_flat(
+                inst, theta_hat, cfg, state.pairs,
+                state.w_arm, state.w_pair,
+                state.curv_arm, state.curv_pair
+            );
             have_design = true;
         }
         for (int i = 0; i < inst.K; ++i) {
-            W_arm[i] += w_arm[i];
+            state.W_arm[i] += state.w_arm[i];
         }
-        for (int j = 0; j < inst.K; ++j) {
-            for (int k = j + 1; k < inst.K; ++k) {
-                W_pair[j][k] += w_pair[j][k];
-            }
+        for (int p = 0; p < (int)state.pairs.size(); ++p) {
+            state.W_pair[p] += state.w_pair[p];
         }
 
         int best_i = 0;
-        double best_val = (double)Nc[0] - W_arm[0];
+        double best_val = (double)state.Nc[0] - state.W_arm[0];
         for (int i = 1; i < inst.K; ++i) {
-            if (double v = (double)Nc[i] - W_arm[i]; v < best_val) { 
+            if (double v = (double)state.Nc[i] - state.W_arm[i]; v < best_val) { 
                 best_val = v; 
                 best_i = i;
             }
         }
 
-        int best_j = 0, best_k = 1;
-        double best_duel_val = (double)Nd[0][1] - W_pair[0][1];
-        for (int j = 0; j < inst.K; ++j) for (int k = j + 1; k < inst.K; ++k) {
-            if (double v = (double)Nd[j][k] - W_pair[j][k]; v < best_duel_val) { 
-                best_duel_val = v; 
-                best_j = j;
-                best_k = k;
+        int best_p = 0;
+        double best_duel_val = (double)state.Nd[0] - state.W_pair[0];
+        for (int p = 1; p < (int)state.pairs.size(); ++p) {
+            if (double v = (double)state.Nd[p] - state.W_pair[p]; v < best_duel_val) {
+                best_duel_val = v;
+                best_p = p;
             }
         }
 
@@ -672,11 +669,13 @@ inline RunSummary run_one(
         if (!do_duel) {
             int r = sample_reward(inst, best_i, rng);
             r01s[best_i][r]++;
-            Nc[best_i]++; t_c++;
+            state.Nc[best_i]++; t_c++;
         } else {
+            const int best_j = state.pairs[best_p].j;
+            const int best_k = state.pairs[best_p].k;
             int y = sample_duel_outcome(inst, best_j, best_k, rng);
             y01s[best_j][best_k][y]++;
-            Nd[best_j][best_k]++;
+            state.Nd[best_p]++;
         }
     }
 
@@ -696,7 +695,6 @@ inline RunSummary run_rand(Instance& inst, const HybridConfig& cfg, RNG& rng) {
     out.true_best = inst.true_best_arm();
 
     std::vector<int> Nc(inst.K, 0);
-
 
     Vec theta_hat(inst.d, 0.0);
 

@@ -24,7 +24,13 @@ g++ -std=c++17 -O2 -Isrc src/main.cpp -o main
 Run the dimension-scaling experiment on freshly generated shared instances:
 
 ```bash
-./main --mode batch --K 5 --d 4 --S 5.0 --seed 123 --delta 0.05 --max_steps 2000000 --runs 10
+./main --mode batch --K 5 --d 4 --S 2.0 --seed 123 --delta 0.05 --max_steps 2000000 --runs 10
+```
+
+Run the same batch of algorithms on the deterministic basis-plus-rotated instance, where `K=d+1`:
+
+```bash
+./main --mode batch_basis --d 4 --S 5.0 --seed 123 --delta 0.05 --max_steps 2000000 --runs 10
 ```
 
 For a faster exploratory run of the same experiment, refresh the HyTS MLE/design every 10 steps:
@@ -46,6 +52,13 @@ Generate one instance and run a single algorithm on it:
 ./main --mode run --load instance.txt --algo hybrid --delta 0.05 --max_steps 2000000 --runs 10
 ```
 
+Generate the deterministic basis-plus-rotated instance with `K=d+1`, arms `x_i=e_i`, `x_{d+1}=(cos 0.1, sin 0.1, 0,...)`, and `theta_star=(S-1)e_1`. This mode requires `d >= 2`.
+
+```bash
+./main --mode gen_basis --d 4 --S 5.0 --out basis_instance.txt
+./main --mode run --load basis_instance.txt --algo hybrid --delta 0.05 --max_steps 2000000 --runs 10
+```
+
 ## Usage Examples
 
 Small smoke test:
@@ -54,11 +67,24 @@ Small smoke test:
 ./main --mode batch --K 3 --d 2 --S 5.0 --seed 1 --delta 0.05 --max_steps 2000 --runs 1
 ```
 
+Small smoke test on the deterministic basis-plus-rotated instance:
+
+```bash
+./main --mode batch_basis --d 2 --S 5.0 --seed 1 --delta 0.05 --max_steps 2000 --runs 1
+```
+
 Run HyTS-GLB only on a saved instance:
 
 ```bash
 ./main --mode gen --K 5 --d 4 --S 5.0 --seed 123 --out instance.txt
 ./main --mode run --load instance.txt --algo hybrid --delta 0.05 --max_steps 2000000 --runs 10
+```
+
+Run HyTS-GLB on the deterministic basis-plus-rotated instance:
+
+```bash
+./main --mode gen_basis --d 12 --S 5.0 --out basis_d12.txt
+./main --mode run --load basis_d12.txt --algo hybrid --delta 0.05 --max_steps 2000000 --runs 10
 ```
 
 Run reward-only HyTS, corresponding to ReTS-GLB:
@@ -99,18 +125,22 @@ Run cost-aware HyTS across the built-in cost ratios:
 
 ## Algorithms
 
-`--mode batch` runs:
+`--mode batch` and `--mode batch_basis` run:
 
 * `RAGEGLM_NoDuel`: reward-only RAGE-GLM baseline.
 * `RAGEGLM_NoReward`: dueling-only RAGE-GLM baseline, treating pairs as measurement actions.
 * `Random_WithDuel`: random hybrid reward/dueling sampling.
 * `ReTS_GLB`: reward-only track-and-stop variant.
+* `DuelTS_GLB`: dueling-only track-and-stop variant.
 * `HyTS_GLB`: proposed hybrid track-and-stop method.
+
+`batch` generates one fresh synthetic instance per run. `batch_basis` uses the deterministic basis-plus-rotated instance with `K=d+1` in every run; its output filenames are prefixed with `Basis_`.
 
 The RAGE-GLM baseline is implemented in the theorem-style fixed-design form: after burn-in, each elimination round computes its MLE using only that round's samples, not cumulative samples from previous rounds.
 
 ## Main Parameters
 
+* `--mode`: command mode. Common values are `gen`, `gen_basis`, `run`, `batch`, `batch_basis`, and `cost`.
 * `--K`: number of arms.
 * `--d`: feature dimension.
 * `--S`: radius constraint for theta, `||theta|| <= S`.

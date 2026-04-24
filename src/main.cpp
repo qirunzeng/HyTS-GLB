@@ -113,69 +113,6 @@ int main(int argc, char** argv) {
     uint64_t seed = (uint64_t)std::stoull(get(mp, "--seed", "1"));
     RNG rng(seed);
 
-    if (mode == "K2") {
-        int d = geti(mp, "--d", 2);
-        Instance inst = K2(d);
-        // std::cout << "Instance K2: K = " << inst.K << ", d = " << inst.d << ", S = " << inst.S << "\n";
-        inst.reallocate();
-        init(inst);
-        // RUN HYBRID
-        {
-            HybridConfig cfg;
-            cfg.delta = 0.05;
-            cfg.duel_bound = 2.;
-            cfg.max_steps = 2000000;
-            cfg.get_sc_sd(inst.S);
-            double ave = 0.0;
-            for (int r = 0; r < 10; ++r) {
-                RNG rrng(seed + 10007ull * (uint64_t)r + 17ull);
-                RunSummary rs = run_one(inst, cfg, rrng);
-                ave += rs.stop_time;
-                std::cout << "Hybrid: StopTime = " << rs.stop_time
-                        << ", Right = " << (rs.correct ? 1 : 0) << "\n";
-            }
-            std::cout << "Average StopTime = " << ave / 10.0 << "\n";
-        }
-        // RUN HYBRID-REWARD-ONLY
-        {
-            HybridConfig cfg;
-            cfg.delta = 0.05;
-            cfg.duel_bound = 2.;
-            cfg.max_steps = 2000000;
-            cfg.reward_only = true;
-            cfg.get_sc_sd(inst.S);
-            double ave = 0.0;
-            for (int r = 0; r < 10; ++r) {
-                RNG rrng(seed + 10007ull * (uint64_t)r + 17ull);
-                RunSummary rs = run_one(inst, cfg, rrng);
-                ave += rs.stop_time;
-                std::cout << "Hybrid-Reward-Only: StopTime = " << rs.stop_time
-                        << ", Right = " << (rs.correct ? 1 : 0) << "\n";
-            }
-            std::cout << "Average StopTime = " << ave / 10.0 << "\n";
-
-        }
-        // RUN HYBRID-DUEL-ONLY
-        {
-            HybridConfig cfg;
-            cfg.delta = 0.05;
-            cfg.duel_bound = 2.;
-            cfg.max_steps = 2000000;
-            cfg.duel_only = true;
-            cfg.get_sc_sd(inst.S);
-            double ave = 0.0;
-            for (int r = 0; r < 10; ++r) {
-                RNG rrng(seed + 10007ull * (uint64_t)r + 17ull);
-                RunSummary rs = run_one(inst, cfg, rrng);
-                ave += rs.stop_time;
-                std::cout << "Hybrid-Duel-Only: StopTime = " << rs.stop_time
-                        << ", Right = " << (rs.correct ? 1 : 0) << "\n";
-            }
-            std::cout << "Average StopTime = " << ave / 10.0 << "\n";
-        }
-        return 0;
-    }
-
     if (mode == "gen") {
         int K = geti(mp, "--K", 10);
         int d = geti(mp, "--d", 2);
@@ -186,6 +123,23 @@ int main(int argc, char** argv) {
         save_instance(inst, out);
 
         std::cout << "Generated instance to: " << out << "\n";
+        return 0;
+    }
+
+    if (mode == "gen_basis") {
+        int d = geti(mp, "--d", 2);
+        double S = getd(mp, "--S", 2.0);
+        std::string out = get(mp, "--out", "basis_instance.txt");
+        if (d < 2) {
+            std::cerr << "--mode gen_basis requires --d >= 2\n";
+            return 1;
+        }
+
+        Instance inst = generate_basis_rotated_instance(d, S);
+        save_instance(inst, out);
+
+        std::cout << "Generated basis-rotated instance to: " << out
+                  << " (K = " << inst.K << ", d = " << inst.d << ")\n";
         return 0;
     }
 
@@ -570,10 +524,15 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    else if (mode == "batch") {
+    else if (mode == "batch" || mode == "batch_basis") {
+        const bool basis_batch = (mode == "batch_basis");
         int d = geti(mp, "--d", 2);
-        int K = geti(mp, "--K", d+1);
+        int K = basis_batch ? d + 1 : geti(mp, "--K", d+1);
         double S = getd(mp, "--S", 2.0);
+        if (basis_batch && d < 2) {
+            std::cerr << "--mode batch_basis requires --d >= 2\n";
+            return 1;
+        }
 
         double delta = getd(mp, "--delta", 0.2);
         int max_steps = geti(mp, "--max_steps", 200000);
@@ -583,15 +542,17 @@ int main(int argc, char** argv) {
         std::vector<long long> st_rage_duel;   st_rage_duel.reserve(runs);
         std::vector<long long> st_rand;   st_rand.reserve(runs);
         std::vector<long long> st_rets;   st_rets.reserve(runs);
+        std::vector<long long> st_duelts; st_duelts.reserve(runs);
         std::vector<long long> st_hyts;   st_hyts.reserve(runs);
 
-        int succ_rage_r = 0, succ_rage_duel = 0, succ_rand = 0, succ_rets = 0, succ_hyts = 0;
+        int succ_rage_r = 0, succ_rage_duel = 0, succ_rand = 0, succ_rets = 0, succ_duelts = 0, succ_hyts = 0;
 
 
         std::filesystem::create_directories("../output");
 
         auto outpath_of = [&](const std::string& tag) {
             std::ostringstream oss;
+            if (basis_batch) oss << "Basis_";
             oss << tag << "_" << d << "_" << fmt_S(S) << "_" << K << "_" << delta << ".txt";
             return std::string("../output/") + oss.str();
         };
@@ -603,14 +564,18 @@ int main(int argc, char** argv) {
 
             out << "Seed = " << seed << ", Delta = " << delta << "\n";
             out << "K = " << K << ", d = " << d << ", S = " << fmt_S(S)
-                << ", max_steps = " << max_steps << ", runs = " << runs << "\n";
+                << ", max_steps = " << max_steps << ", runs = " << runs
+                << ", instance = " << (basis_batch ? "basis_rotated" : "synthetic")
+                << "\n";
             out << "Run, InstanceSeed, Stop Time, Right\n";
             out.close();
         };
 
         init_file("RAGEGLM_NoDuel");
+        init_file("RAGEGLM_NoReward");
         init_file("Random_WithDuel");
         init_file("ReTS_GLB");
+        init_file("DuelTS_GLB");
         init_file("HyTS_GLB");
 
 
@@ -645,7 +610,9 @@ int main(int argc, char** argv) {
 
             uint64_t inst_seed = seed + 10007ull * (uint64_t)r + 17ull;
             RNG inst_rng(inst_seed);
-            Instance inst = generate_synthetic_instance(K, d, S, inst_rng);
+            Instance inst = basis_batch
+                ? generate_basis_rotated_instance(d, S)
+                : generate_synthetic_instance(K, d, S, inst_rng);
             inst.reallocate();
             
             double duel_bound = init(inst);
@@ -727,6 +694,28 @@ int main(int argc, char** argv) {
             }
 
             {
+                std::string path = outpath_of("DuelTS_GLB");
+                std::ofstream out(path, std::ios::out | std::ios::app);
+                if (!out) throw std::runtime_error("cannot open for appending: " + path);
+
+                HybridConfig cfg = hy_cfg;
+                cfg.reward_only = false;
+                cfg.duel_only   = true;
+
+                RNG rrng(inst_seed ^ 0xd1b54a32d192ed03ull);
+                RunSummary rs = run_one(inst, cfg, rrng);
+
+                out << (r + 1) << ", " << inst_seed << ", " << rs.stop_time << ", " << (rs.correct ? 1 : 0) << "\n";
+                out.close();
+
+                printf("DuelTS-GLB: Round = %d\n", rs.stop_time);
+
+                st_duelts.push_back(rs.stop_time);
+                succ_duelts += (rs.correct ? 1 : 0);
+
+            }
+
+            {
                 std::string path = outpath_of("HyTS_GLB");
                 std::ofstream out(path, std::ios::out | std::ios::app);
                 if (!out) throw std::runtime_error("cannot open for appending: " + path);
@@ -796,6 +785,16 @@ int main(int argc, char** argv) {
             out << "Average stop time = " << ms.mean
                 << ", StdDev = " << ms.stdev
                 << ", Success rate = " << (runs ? (double)succ_hyts / (double)runs : 0.0)
+                << "\n";
+        }
+        {
+            MeanStd ms = mean_std(st_duelts);
+            std::string path = outpath_of("DuelTS_GLB");
+            std::ofstream out(path, std::ios::out | std::ios::app);
+            if (!out) throw std::runtime_error("cannot open for appending: " + path);
+            out << "Average stop time = " << ms.mean
+                << ", StdDev = " << ms.stdev
+                << ", Success rate = " << (runs ? (double)succ_duelts / (double)runs : 0.0)
                 << "\n";
         }
 
