@@ -245,7 +245,7 @@ inline void mat_add_inplace(Mat& A, const Mat& B, int cnt = 1) {
     }
 }
 
-inline Mat compute_M_from_data(const Instance& inst, double ridge, std::vector<int> T) {
+inline Mat compute_M_from_data(const Instance& inst, double ridge, const std::vector<int>& T) {
     int d = inst.d;
     Mat M(d, 0.0);
 
@@ -350,10 +350,6 @@ inline GLGapEResult run_glgape_baseline(
 
     int t;
     for (t = E + 1; t <= cfg.max_steps; ++t) {
-        if (t % 500 == 0) {
-            std::cout << "Step: " << t << "\n";
-        }
-
         theta_hat = constrained_mle_logistic(
             r01s, y01s, d, inst.S,
             1.0, 1.0,
@@ -399,10 +395,6 @@ inline GLGapEResult run_glgape_baseline(
             return res;
         }
 
-        
-        if (t % 500 == 0) {
-            std::cout << Bt << std::endl;
-        }
         if (Bt <= cfg.eps) {
             GLGapEResult res;
             res.hat_arm = it;

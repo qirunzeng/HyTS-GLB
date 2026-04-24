@@ -70,12 +70,10 @@ auto init = [](Instance &inst) -> double {
     for (int i = 0; i < inst.K; ++i) {
         inst.dots[i] = dot(inst.x[i], inst.theta_star);
         inst.means[i] = sigmoid(inst.dots[i]);
-        std::cout << __LINE__ << "<<<<<< " << i << " >>>>>>\n";
         if (inst.dots[i] > max_m) {
             max_m = inst.dots[i];
             inst.best = i;
         }
-        std::cout << "Arm " << i << ": dot = " << inst.dots[i] << ", mean = " << inst.means[i] << "\n";
     }
     double duel_bound = 0.;
     for (int j = 0; j < inst.K; ++j) {
@@ -84,29 +82,16 @@ auto init = [](Instance &inst) -> double {
             inst.gap_dots[j][k] = dot(inst.g[j][k], inst.theta_star);
             duel_bound = std::max(duel_bound, std::sqrt(dot(inst.g[j][k], inst.g[j][k])));
             inst.gaps[j][k] = sigmoid(inst.gap_dots[j][k]);
-            std::cout << "Gap " << j << " vs " << k << ": dot = " << inst.gap_dots[j][k] << ", gap = " << inst.gaps[j][k] << "\n";
         }
     }
     return duel_bound;
 };
 
 
-static std::string fmt_num(double x) {
-    std::ostringstream oss;
-    oss << std::setprecision(12) << std::fixed << x;
-    std::string s = oss.str();
-    while (!s.empty() && s.back() == '0') s.pop_back();
-    if (!s.empty() && s.back() == '.') s.pop_back();
-    for (char& c : s) if (c == '.') c = 'p';
-    return s;
-}
-
-
 int main(int argc, char** argv) {
     std::unordered_map<std::string,std::string> mp;
     for (int i = 1; i < argc; ++i) {
         std::string key = argv[i];
-        std::cout << "Arg: " << key << std::endl;
         if (key.rfind("--", 0) == 0) {
             std::string val = "1";
             if (i + 1 < argc && std::string(argv[i+1]).rfind("--", 0) != 0) {
@@ -114,10 +99,8 @@ int main(int argc, char** argv) {
                 ++i;
             }
             mp[key] = val;
-            std::cout << "Parsed argument: " << key << " = " << val << std::endl;
         }
     }
-    std::cout << "Parsed " << mp.size() << " arguments.\n";
 
     std::string mode = get(mp, "--mode", "");
     if (mode.empty()) { 
@@ -231,6 +214,7 @@ int main(int argc, char** argv) {
         cfg_base.zeta_c = getd(mp, "--zeta_c", 1.0);
         cfg_base.zeta_d = getd(mp, "--zeta_d", 1.0);
         cfg_base.lambda = getd(mp, "--lambda", 1e-6);
+        cfg_base.update_period = geti(mp, "--update_period", 1);
 
         for (size_t si = 0; si < ratio_list.size(); ++si) {
             int a = ratio_list[si].first;
@@ -286,7 +270,7 @@ int main(int argc, char** argv) {
                     RNG rrng(inst_seed ^ 0x369dea0f31a53f85ull);
                     RunSummary rs = run_cost(inst, cfg, rrng);
 
-                    double total_cost = cfg.cc * rs.c_c + cfg.cd * rs.c_d;
+                    double total_cost = rs.c_c + rs.c_d;
 
                     out << (si + 1) << ", " << (j + 1) << ", " << inst_seed
                         << ", WithCost"
@@ -387,6 +371,7 @@ int main(int argc, char** argv) {
             cfg.zeta_c = getd(mp, "--zeta_c", 1.0);
             cfg.zeta_d = getd(mp, "--zeta_d", 1.0);
             cfg.lambda = getd(mp, "--lambda", 1e-6);
+            cfg.update_period = geti(mp, "--update_period", 1);
 
             cfg.reward_only = (geti(mp, "--reward_only", 0) != 0);
             cfg.duel_only = (geti(mp, "--duel_only", 0) != 0);
@@ -638,6 +623,7 @@ int main(int argc, char** argv) {
         hy_cfg.zeta_c = getd(mp, "--zeta_c", 1.0);
         hy_cfg.zeta_d = getd(mp, "--zeta_d", 1.0);
         hy_cfg.lambda = getd(mp, "--lambda", 1e-6);
+        hy_cfg.update_period = geti(mp, "--update_period", 1);
 
         HybridConfig rnd_cfg = hy_cfg;
         rnd_cfg.reward_only = true;

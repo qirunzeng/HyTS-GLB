@@ -28,6 +28,7 @@ struct HybridConfig {
     int max_steps = 200000;
 
     int fw_iters = 20;
+    int update_period = 1;
 
     double Rs_c = 1.0;
     double Rs_d = 1.0;
@@ -57,23 +58,35 @@ struct RunSummary {
     bool correct = false;
 };
 
-inline Mat hessian_classic_only(const std::vector<int> Nc, const Vec& theta_hat, double zeta_c, const Instance& inst) {
+inline Mat hessian_classic_only(const std::vector<int>& Nc, const Vec& theta_hat, double zeta_c, const Instance& inst) {
     Mat H(inst.d, 0.0);
     for (int i = 0; i < inst.K; ++i) {
+        if (Nc[i] == 0) continue;
         double z = dot(inst.x[i], theta_hat);
-        double w = mu_prime(z);
-        H = H + (1.0 * Nc[i] * (1.0/zeta_c) * w) * outer(inst.x[i]);
+        double coef = (double)Nc[i] * mu_prime(z) / zeta_c;
+        for (int a = 0; a < inst.d; ++a) {
+            const double xa = inst.x[i][a];
+            for (int b = 0; b < inst.d; ++b) {
+                H(a,b) += coef * xa * inst.x[i][b];
+            }
+        }
     }
     return H;
 }
 
-inline Mat hessian_duel_only(const std::vector<std::vector<int>> Nd, const Vec& theta_hat, double zeta_d, const Instance& inst) {
+inline Mat hessian_duel_only(const std::vector<std::vector<int>>& Nd, const Vec& theta_hat, double zeta_d, const Instance& inst) {
     Mat H(inst.d, 0.0);
     for (int j = 0; j < inst.K; ++j) {
         for (int k = j+1; k < inst.K; ++k) {
+            if (Nd[j][k] == 0) continue;
             double z = dot(inst.g[j][k], theta_hat);
-            double w = mu_prime(z);
-            H = H + (1.0 * Nd[j][k] * (1.0 / zeta_d) * w) * outer(inst.g[j][k]);
+            double coef = (double)Nd[j][k] * mu_prime(z) / zeta_d;
+            for (int a = 0; a < inst.d; ++a) {
+                const double ga = inst.g[j][k][a];
+                for (int b = 0; b < inst.d; ++b) {
+                    H(a,b) += coef * ga * inst.g[j][k][b];
+                }
+            }
         }
     }
     return H;
@@ -89,7 +102,11 @@ inline Mat info_matrix_A(
 ) {
     double ac = 1.0 / (2.0 * (1.0 + S * Rs_c));
     double ad = 1.0 / (2.0 * (1.0 + duel_bound * S * Rs_d));
-    return ac * Hc + ad * Hd;
+    Mat A(Hc.n, 0.0);
+    for (int i = 0; i < Hc.n * Hc.n; ++i) {
+        A.a[i] = ac * Hc.a[i] + ad * Hd.a[i];
+    }
+    return A;
 }
 
 inline int argmax_score(const std::vector<double>& v) {
@@ -121,11 +138,12 @@ inline bool stop_condition(
     bool PrintInfo = false
 ) {
     int ihat = predicted_best_arm(inst, theta_hat);
+    Chol L = chol_spd(A);
 
     bool ret = true;
     for (int i = 0; i < inst.K; ++i) if (i != ihat) {
         double gap = dot(inst.g[ihat][i], theta_hat);
-        double q = quad_form_inv_spd(A, inst.g[ihat][i]);
+        double q = quad_form_inv_chol(L, inst.g[ihat][i]);
         double rad = std::sqrt(std::max(0.0, beta * q));
         if (PrintInfo) {
             printf("%d-%d: gap = %lf, rad = %lf\n", ihat, i, gap, rad);
@@ -167,41 +185,53 @@ inline Mat compute_A_of_w(
     const Vec& theta_hat,
     const HybridConfig& cfg,
     const std::vector<double>& w_arm,
-    const std::vector<std::vector<double>>& w_pair
+    const std::vector<std::vector<double>>& w_pair,
+    const std::vector<double>* curv_arm_cache = nullptr,
+    const std::vector<std::vector<double>>* curv_pair_cache = nullptr
 ) {
     int d = inst.d;
     int K = inst.K;
 
-    Mat Ac(d, cfg.lambda), Ad(d, cfg.lambda);
+    const double wc = 1.0 / (2.0 * (1.0 + inst.S * cfg.Rs_c));
+    const double wd = 1.0 / (2.0 * (1.0 + cfg.duel_bound * inst.S * cfg.Rs_d));
+
+    Mat A(d, cfg.lambda * (wc + wd));
 
     for (int i = 0; i < K; ++i) {
         double wi = w_arm[i];
         if (wi <= 0.0) continue;
-        double z = dot(inst.x[i], theta_hat);
-        double curv = mu_prime(z) / cfg.zeta_c;
+        double curv = 0.0;
+        if (curv_arm_cache) {
+            curv = (*curv_arm_cache)[i];
+        } else {
+            double z = dot(inst.x[i], theta_hat);
+            curv = mu_prime(z) / cfg.zeta_c;
+        }
+        const double coef = wc * wi * curv;
         for (int a = 0; a < d; ++a) for (int b = 0; b < d; ++b)
-            Ac(a,b) += wi * curv * inst.x[i][a] * inst.x[i][b];
+            A(a,b) += coef * inst.x[i][a] * inst.x[i][b];
     }
 
     for (int j = 0; j < K; ++j) {
         for (int k = j + 1; k < K; ++k) {
             double wjk = w_pair[j][k];
             if (wjk <= 0.0) continue;
-            Vec g = inst.x[j] - inst.x[k];
-            double z = dot(g, theta_hat);
-            double curv = mu_prime(z) / cfg.zeta_d;
+            const Vec& g = inst.g[j][k];
+            double curv = 0.0;
+            if (curv_pair_cache) {
+                curv = (*curv_pair_cache)[j][k];
+            } else {
+                double z = dot(g, theta_hat);
+                curv = mu_prime(z) / cfg.zeta_d;
+            }
+            const double coef = wd * wjk * curv;
             for (int a = 0; a < d; ++a) {
                 for (int b = 0; b < d; ++b) {
-                    Ad(a,b) += wjk * curv * g[a] * g[b];
+                    A(a,b) += coef * g[a] * g[b];
                 }
             }
         }
     }
-
-    double wc = 1.0 / (2.0 * (1.0 + inst.S * cfg.Rs_c));
-    double wd = 1.0 / (2.0 * (1.0 + 2.0 * inst.S * cfg.Rs_d));
-
-    Mat A = wc * Ac + wd * Ad;
     return A;
 }
 
@@ -263,7 +293,7 @@ static void compute_optimal_proportions_track_stop(
     }
 
     for (int m = 0; m < cfg.fw_iters; ++m) {
-        Mat A = compute_A_of_w(inst, theta_hat, cfg, w_arm, w_pair);
+        Mat A = compute_A_of_w(inst, theta_hat, cfg, w_arm, w_pair, &curv_arm, &curv_pair);
 
         Chol L = chol_spd(A);
 
@@ -389,7 +419,7 @@ static void cost_optimal_proportions_track_stop(
     }
 
     for (int m = 0; m < cfg.fw_iters; ++m) {
-        Mat A = compute_A_of_w(inst, theta_hat, cfg, w_arm, w_pair);
+        Mat A = compute_A_of_w(inst, theta_hat, cfg, w_arm, w_pair, &curv_arm, &curv_pair);
         Chol L = chol_spd(A);
 
         int idag = -1;
@@ -460,6 +490,9 @@ inline RunSummary run_cost(
 
     std::vector<double> W_arm(inst.K, 0.0);
     std::vector<std::vector<double>> W_pair(inst.K, std::vector<double>(inst.K, 0.0));
+    std::vector<double> w_arm(inst.K, 0.0);
+    std::vector<std::vector<double>> w_pair(inst.K, std::vector<double>(inst.K, 0.0));
+    bool have_design = false;
 
     
     std::vector<std::vector<int>> r01s(inst.K, std::vector<int> (2, 0));
@@ -468,7 +501,10 @@ inline RunSummary run_cost(
 
     int t = 0, t_c = 0;
     
-    for (; t < inst.K * inst.d; t++, t_c++) {
+    const int warmup_steps = inst.K * inst.d;
+    const int update_period = std::max(1, cfg.update_period);
+
+    for (; t < warmup_steps; t++, t_c++) {
         int a = t % inst.K;
         int r = sample_reward(inst, a, rng);
         r01s[a][r]++;
@@ -477,23 +513,25 @@ inline RunSummary run_cost(
 
     for (; t < cfg.max_steps; ++t) {
 
-        theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
+        const bool do_update = !have_design || ((t - warmup_steps) % update_period == 0);
 
-        Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
-        Mat Hd = hessian_duel_only(Nd, theta_hat, cfg.zeta_d, inst);
-        Mat A  = info_matrix_A(Hc, Hd, inst.S, cfg.Rs_c, cfg.Rs_d, cfg.duel_bound) + Mat(inst.d, cfg.lambda);
+        if (do_update) {
+            theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
 
-        double Lt = lipschitz_Lt_bernoulli(t_c, t - t_c, inst.S);
-        double beta = beta_t(cfg.delta, inst.d, inst.S, Lt);
+            Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
+            Mat Hd = hessian_duel_only(Nd, theta_hat, cfg.zeta_d, inst);
+            Mat A  = info_matrix_A(Hc, Hd, inst.S, cfg.Rs_c, cfg.Rs_d, cfg.duel_bound) + Mat(inst.d, cfg.lambda);
 
-        if (t > inst.d && stop_condition(inst, theta_hat, A, beta)) {
-            break;
+            double Lt = lipschitz_Lt_bernoulli(t_c, t - t_c, inst.S);
+            double beta = beta_t(cfg.delta, inst.d, inst.S, Lt);
+
+            if (t > inst.d && stop_condition(inst, theta_hat, A, beta)) {
+                break;
+            }
+
+            cost_optimal_proportions_track_stop(inst, theta_hat, cfg, w_arm, w_pair);
+            have_design = true;
         }
-
-
-        std::vector<double> w_arm(inst.K, 0.0);
-        std::vector<std::vector<double>> w_pair(inst.K, std::vector<double>(inst.K, 0.0));
-        cost_optimal_proportions_track_stop(inst, theta_hat, cfg, w_arm, w_pair);
         for (int i = 0; i < inst.K; ++i) {
             W_arm[i] += w_arm[i];
         }
@@ -559,6 +597,9 @@ inline RunSummary run_one(
 
     std::vector<double> W_arm(inst.K, 0.0);
     std::vector<std::vector<double>> W_pair(inst.K, std::vector<double>(inst.K, 0.0));
+    std::vector<double> w_arm(inst.K, 0.0);
+    std::vector<std::vector<double>> w_pair(inst.K, std::vector<double>(inst.K, 0.0));
+    bool have_design = false;
 
     
     std::vector<std::vector<int>> r01s(inst.K, std::vector<int> (2, 0));
@@ -566,7 +607,10 @@ inline RunSummary run_one(
 
     int t = 0, t_c = 0;
     
-    for (; t < inst.K * inst.d; t++, t_c++) {
+    const int warmup_steps = inst.K * inst.d;
+    const int update_period = std::max(1, cfg.update_period);
+
+    for (; t < warmup_steps; t++, t_c++) {
         int a = t % inst.K;
         int r = sample_reward(inst, a, rng);
         r01s[a][r]++;
@@ -576,23 +620,25 @@ inline RunSummary run_one(
 
     for (; t < cfg.max_steps; ++t) {
 
-        theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
+        const bool do_update = !have_design || ((t - warmup_steps) % update_period == 0);
 
-        Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
-        Mat Hd = hessian_duel_only(Nd, theta_hat, cfg.zeta_d, inst);
-        Mat A  = info_matrix_A(Hc, Hd, inst.S, cfg.Rs_c, cfg.Rs_d, cfg.duel_bound) + Mat(inst.d, cfg.lambda);
+        if (do_update) {
+            theta_hat = constrained_mle_logistic(r01s, y01s, inst.d, inst.S, cfg.zeta_c, cfg.zeta_d, cfg.mle_cfg, theta_hat, inst);
 
-        double Lt = lipschitz_Lt_bernoulli(t_c, t - t_c, inst.S);
-        double beta = beta_t(cfg.delta, inst.d, inst.S, Lt);
+            Mat Hc = hessian_classic_only(Nc, theta_hat, cfg.zeta_c, inst);
+            Mat Hd = hessian_duel_only(Nd, theta_hat, cfg.zeta_d, inst);
+            Mat A  = info_matrix_A(Hc, Hd, inst.S, cfg.Rs_c, cfg.Rs_d, cfg.duel_bound) + Mat(inst.d, cfg.lambda);
 
-        if (t > inst.d && stop_condition(inst, theta_hat, A, beta)) {
-            break;
+            double Lt = lipschitz_Lt_bernoulli(t_c, t - t_c, inst.S);
+            double beta = beta_t(cfg.delta, inst.d, inst.S, Lt);
+
+            if (t > inst.d && stop_condition(inst, theta_hat, A, beta)) {
+                break;
+            }
+
+            compute_optimal_proportions_track_stop(inst, theta_hat, cfg, w_arm, w_pair);
+            have_design = true;
         }
-
-
-        std::vector<double> w_arm(inst.K, 0.0);
-        std::vector<std::vector<double>> w_pair(inst.K, std::vector<double>(inst.K, 0.0));
-        compute_optimal_proportions_track_stop(inst, theta_hat, cfg, w_arm, w_pair);
         for (int i = 0; i < inst.K; ++i) {
             W_arm[i] += w_arm[i];
         }
@@ -634,11 +680,6 @@ inline RunSummary run_one(
         }
     }
 
-    std::cout << "THETA_HAT: ";
-    for (int i = 0; i < inst.d; ++i) {
-        std::cout << theta_hat[i] << " ";
-    }
-    std::cout << std::endl;
     out.stop_time = t;
     out.c_c = t_c * cfg.cc;
     out.c_d = (t - t_c) * cfg.cd;

@@ -100,7 +100,7 @@ inline double total_nll_grad_hess(
 
 inline double total_nll_only(
     const std::vector<std::vector<int>>& r01s,
-    const std::vector<std::vector<std::vector<int>>> y01s,
+    const std::vector<std::vector<std::vector<int>>>& y01s,
     const Vec& theta,
     double zeta_c,
     double zeta_d,
@@ -139,7 +139,7 @@ inline double total_nll_only(
 
 inline Vec constrained_mle_logistic(
     const std::vector<std::vector<int>>& r01s,
-    const std::vector<std::vector<std::vector<int>>> y01s,
+    const std::vector<std::vector<std::vector<int>>>& y01s,
     int d,
     double S,
     double zeta_c,

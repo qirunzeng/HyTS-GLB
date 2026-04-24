@@ -200,6 +200,36 @@ Mat fisher_matrix_from_lambda(
     return H;
 }
 
+Mat fisher_matrix_from_lambda_curv(
+    int d,
+    const std::vector<ObsActionRef>& acts,
+    const std::vector<double>& lambda,
+    const std::vector<double>& curv,
+    double ridge
+) {
+    Mat H(d, 0.0);
+
+    const int M = (int)acts.size();
+    if ((int)lambda.size() != M || (int)curv.size() != M) {
+        throw std::runtime_error("fisher_matrix_from_lambda_curv: size mismatch");
+    }
+
+    for (int m = 0; m < M; ++m) {
+        const double lm = lambda[m];
+        if (lm <= 0.0) continue;
+        const Vec& x = *acts[m].v;
+        const double coef = lm * curv[m];
+        for (int i = 0; i < d; ++i) {
+            const double xi = x[i];
+            for (int j = 0; j < d; ++j) {
+                H(i, j) += coef * xi * x[j];
+            }
+        }
+    }
+    for (int i = 0; i < d; ++i) H(i, i) += ridge;
+    return H;
+}
+
 
 std::vector<double> approx_fw_design(
     const Instance& inst,
@@ -213,9 +243,13 @@ std::vector<double> approx_fw_design(
     if (M <= 0) return {};
 
     std::vector<double> lambda(M, 1.0 / (double)M);
+    std::vector<double> curv(M, 0.0);
+    for (int m = 0; m < M; ++m) {
+        curv[m] = mu_prime(dot(*acts[m].v, theta_prev));
+    }
 
     for (int t = 0; t < iters; ++t) {
-        Mat H = fisher_matrix_from_lambda(inst, acts, lambda, theta_prev, ridge);
+        Mat H = fisher_matrix_from_lambda_curv(inst.d, acts, lambda, curv, ridge);
 
         int worst_i = 0;
         double worstv = quad_form_inv_spd(H, D[0]);
@@ -230,10 +264,8 @@ std::vector<double> approx_fw_design(
         double best_score = -1.0;
         for (int m = 0; m < M; ++m) {
             const Vec& x = *acts[m].v;
-            const double z = dot(x, theta_prev);
-            const double w = mu_prime(z);
             const double ip = dot(x, v);
-            const double score = w * ip * ip;
+            const double score = curv[m] * ip * ip;
             if (score > best_score) { best_score = score; best_m = m; }
         }
 
@@ -259,8 +291,8 @@ std::vector<double> approx_burnin_design(
     double ridge
 ) {
     std::vector<Vec> D;
-    D.reserve((size_t)inst.K);
-    for (int a = 0; a < inst.K; ++a) D.push_back(inst.x[a]);
+    D.reserve(acts.size());
+    for (const ObsActionRef& act : acts) D.push_back(*act.v);
     Vec theta0(inst.d, 0.0);
     return approx_fw_design(inst, acts, D, theta0, iters, ridge);
 }
@@ -303,9 +335,12 @@ RAGEGLMResult run_rageglm_baseline(
     const double kappa0 = mu_prime(L * inst.S);
     const double kappa0_inv = 1.0 / std::max(1e-12, kappa0);
 
-    const int teff = K;
+    const int teff = M;
+    const int z_size = K;
+    const int x_size = M;
+    const int union_size = std::max(z_size, x_size);
     const double gd = gamma_d(d, teff, cfg.delta);
-    const int r_eps = (int)std::ceil((double)d * (double)d / std::max(1e-12, cfg.eps_round));
+    const int r_eps = (int)std::ceil(((double)d * (double)(d + 1) + 2.0) / std::max(1e-12, cfg.eps_round));
 
     int n0 = 0;
     if (cfg.burnin_n > 0) {
@@ -360,9 +395,8 @@ RAGEGLMResult run_rageglm_baseline(
     for (int a = 0; a < K; ++a) active.push_back(a);
 
     int k = 1;
-    int XS = (cfg.include_reward ? K : 0) + (cfg.include_dueling_pairs_as_actions ? K * (K-1) / 2 : 0);
     while ((int)active.size() > 1 && t < cfg.max_steps) {
-        double denom = 2.0 * (double)k * (double)k * (double)XS * (2.0 + (double)XS);
+        double denom = 2.0 * (double)k * (double)k * (double)union_size * (2.0 + (double)x_size);
         const double delta_k = cfg.delta / std::max(1.0, denom);
 
         const int z_hat = argmax_z_active(inst, theta_hat, active);
@@ -390,7 +424,7 @@ RAGEGLMResult run_rageglm_baseline(
                 maxD = std::max(maxD, quad_form_inv_spd(H, diff));
             }
         }
-        fval = std::max(fval, (2.0 / std::pow(2.0, (double)k)) * c352 * maxD);
+        fval = std::max(fval, std::pow(2.0, 2.0 * (double)k) * c352 * maxD);
 
         int nk = (int)std::ceil(std::max(
             3.0 * (1.0 + cfg.eps_round) * fval * std::log(1.0 / std::max(1e-300, delta_k)),
@@ -402,16 +436,20 @@ RAGEGLMResult run_rageglm_baseline(
         std::vector<int> countk;
         epsilon_round_counts(lambda, nk, cfg.eps_round, countk);
 
+        std::vector<std::vector<int>> round_r01s(K, std::vector<int>(2, 0));
+        std::vector<std::vector<std::vector<int>>> round_y01s(K,
+            std::vector<std::vector<int>>(K, std::vector<int>(2, 0))
+        );
 
         for (int m = 0; m < M; ++m) {
             for (int c = 0; c < countk[m]; ++c) {
                 const ObsActionRef& act = acts[m];
                 if (!act.is_duel) {
                     const int r = sample_reward(inst, act.a, rng);
-                    r01s[act.a][r]++;
+                    round_r01s[act.a][r]++;
                 } else {
                     const int y = sample_duel_outcome(inst, act.j, act.k, rng);
-                    y01s[act.j][act.k][y]++;
+                    round_y01s[act.j][act.k][y]++;
                 }
                 t++;
                 if (t >= cfg.max_steps) break;
@@ -420,7 +458,7 @@ RAGEGLMResult run_rageglm_baseline(
         }
 
         theta_hat = constrained_mle_logistic(
-            r01s, y01s, d, inst.S,
+            round_r01s, round_y01s, d, inst.S,
             1.0, 1.0,
             cfg.mle_cfg,
             theta_hat,
