@@ -170,9 +170,23 @@ int main(int argc, char** argv) {
         cfg_base.lambda = getd(mp, "--lambda", 1e-6);
         cfg_base.update_period = geti(mp, "--update_period", 1);
 
+        const std::string outname = "Cost_ratios.txt";
+        const std::string outpath = std::string("../output/") + outname;
+
+        std::ofstream out(outpath, std::ios::out | std::ios::trunc);
+        if (!out) throw std::runtime_error("cannot open for writing: " + outpath);
+
+        out << "Seed = " << seed << ", Delta = " << delta << "\n";
+        out << "K = " << K << ", d = " << d << ", S = " << fmt_S(S)
+            << ", max_steps = " << max_steps
+            << ", inst_per_group = " << inst_per_group
+            << ", runs_per_instance = " << runs_per_instance << "\n";
+        out << "RatioIndex, CostRatio, cc, cd, Instance, InstanceSeed, Method, StopTime, Cost_c, Cost_d, TotalCost, Right\n";
+
         for (size_t si = 0; si < ratio_list.size(); ++si) {
             int a = ratio_list[si].first;
             int b = ratio_list[si].second;
+            std::string ratio = std::to_string(a) + ":" + std::to_string(b);
 
             double cc = 2.0 * (double)a / (double)(a + b);
             double cd = 2.0 * (double)b / (double)(a + b);
@@ -181,25 +195,11 @@ int main(int argc, char** argv) {
             cfg.cc = cc;
             cfg.cd = cd;
 
-            std::string outname =
-                "Cost_ratio" + std::to_string(a) + "to" + std::to_string(b)+ ".txt";
-            std::string outpath = std::string("../output/") + outname;
-
-            std::ofstream out(outpath, std::ios::out | std::ios::trunc);
-            if (!out) throw std::runtime_error("cannot open for writing: " + outpath);
-
-            out << "Seed = " << seed << ", Delta = " << delta << "\n";
-            out << "K = " << K << ", d = " << d << ", S = " << fmt_S(S)
-                << ", max_steps = " << max_steps
-                << ", inst_per_group = " << inst_per_group
-                << ", runs_per_instance = " << runs_per_instance
-                << ", ratio = " << a << ":" << b
+            out << "\n# ratio = " << ratio
                 << ", cc = " << cc << ", cd = " << cd
                 << ", (cc+cd=" << (cc+cd) << ")\n";
 
-            out << "Setting, Instance, InstanceSeed, Method, StopTime, Cost_c, Cost_d, TotalCost, Right\n";
-
-            std::vector<double> tot_with_c, tot_with_d, tot_no_c, tot_no_d;
+            std::vector<double> tot_with_c, tot_with_d, tot_with_total, tot_no_c, tot_no_d, tot_no_total;
             std::vector<double> st_with, st_no;
             int succ_with = 0, succ_no = 0;
             long long n_with = 0, n_no = 0;
@@ -226,7 +226,9 @@ int main(int argc, char** argv) {
 
                     double total_cost = rs.c_c + rs.c_d;
 
-                    out << (si + 1) << ", " << (j + 1) << ", " << inst_seed
+                    out << (si + 1) << ", " << ratio
+                        << ", " << cc << ", " << cd
+                        << ", " << (j + 1) << ", " << inst_seed
                         << ", WithCost"
                         << ", " << rs.stop_time
                         << ", " << rs.c_c
@@ -236,6 +238,7 @@ int main(int argc, char** argv) {
 
                     tot_with_c.push_back(rs.c_c);
                     tot_with_d.push_back(rs.c_d);
+                    tot_with_total.push_back(total_cost);
                     st_with.push_back((double)rs.stop_time);
                     succ_with += (rs.correct ? 1 : 0);
                     ++n_with;
@@ -247,7 +250,9 @@ int main(int argc, char** argv) {
 
                     double total_cost = rs.c_c + rs.c_d;
 
-                    out << (si + 1) << ", " << (j + 1) << ", " << inst_seed
+                    out << (si + 1) << ", " << ratio
+                        << ", " << cc << ", " << cd
+                        << ", " << (j + 1) << ", " << inst_seed
                         << ", NoCost"
                         << ", " << rs.stop_time
                         << ", " << rs.c_c
@@ -257,6 +262,7 @@ int main(int argc, char** argv) {
 
                     tot_no_c.push_back(rs.c_c);
                     tot_no_d.push_back(rs.c_d);
+                    tot_no_total.push_back(total_cost);
                     st_no.push_back((double)rs.stop_time);
                     succ_no += (rs.correct ? 1 : 0);
                     ++n_no;
@@ -265,35 +271,43 @@ int main(int argc, char** argv) {
 
             MeanStd ms_tot_with_c = mean_std(tot_with_c);
             MeanStd ms_tot_with_d = mean_std(tot_with_d);
+            MeanStd ms_tot_with_total = mean_std(tot_with_total);
             MeanStd ms_tot_no_c   = mean_std(tot_no_c);
             MeanStd ms_tot_no_d   = mean_std(tot_no_d);
+            MeanStd ms_tot_no_total = mean_std(tot_no_total);
             MeanStd ms_st_with  = mean_std(st_with);
             MeanStd ms_st_no    = mean_std(st_no);
 
-            out << "Summary: WithCost"
+            out << "Summary: ratio = " << ratio
+                << ", Method = WithCost"
                 << ", Avg_C_Cost = " << ms_tot_with_c.mean
                 << ", Std_C_Cost = " << ms_tot_with_c.stdev
                 << ", Avg_D_Cost = " << ms_tot_with_d.mean
                 << ", Std_D_Cost = " << ms_tot_with_d.stdev
+                << ", AvgTotalCost = " << ms_tot_with_total.mean
+                << ", StdTotalCost = " << ms_tot_with_total.stdev
                 << ", AvgStopTime = " << ms_st_with.mean
                 << ", StdStopTime = " << ms_st_with.stdev
                 << ", SuccessRate = " << (n_with ? (double)succ_with / (double)n_with : 0.0)
                 << "\n";
 
-            out << "Summary: NoCost"
+            out << "Summary: ratio = " << ratio
+                << ", Method = NoCost"
                 << ", Avg_C_Cost = " << ms_tot_no_c.mean
                 << ", Std_C_Cost = " << ms_tot_no_c.stdev
                 << ", Avg_D_Cost = " << ms_tot_no_d.mean
                 << ", Std_D_Cost = " << ms_tot_no_d.stdev
+                << ", AvgTotalCost = " << ms_tot_no_total.mean
+                << ", StdTotalCost = " << ms_tot_no_total.stdev
                 << ", AvgStopTime = " << ms_st_no.mean
                 << ", StdStopTime = " << ms_st_no.stdev
                 << ", SuccessRate = " << (n_no ? (double)succ_no / (double)n_no : 0.0)
                 << "\n";
 
-            out.close();
-            std::cout << "Wrote: " << outname << "\n";
         }
 
+        out.close();
+        std::cout << "Wrote: " << outname << "\n";
         return 0;
     }
 

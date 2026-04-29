@@ -47,7 +47,7 @@ struct HybridConfig {
 
     void get_sc_sd(double S) {
         sc = 1.0 / (2.0 * (1. + S * Rs_c));
-        sd = 1.0 / (2.0 * (1. + 2 * S * Rs_d));
+        sd = 1.0 / (2.0 * (1. + duel_bound * S * Rs_d));
     }
 };
 
@@ -388,20 +388,14 @@ static void cost_optimal_proportions_track_stop_flat(
     const int K = inst.K;
     const int P = (int)pairs.size();
 
-    const double inv_cc = 1.0 / std::max(1e-12, cfg.cc);
-    const double inv_cd = 1.0 / std::max(1e-12, cfg.cd);
+    const double cc = std::max(1e-12, cfg.cc);
+    const double cd = std::max(1e-12, cfg.cd);
+    const int active_count = K + P;
 
-    std::fill(w_arm.begin(), w_arm.end(), inv_cc);
-    std::fill(w_pair.begin(), w_pair.end(), inv_cd);
-
-    double sum0 = 0.0;
-    for (double w : w_arm) sum0 += w;
-    for (double w : w_pair) sum0 += w;
-    if (sum0 > 0) {
-        const double inv = 1.0 / sum0;
-        for (double& w : w_arm) w *= inv;
-        for (double& w : w_pair) w *= inv;
-    }
+    // During Frank-Wolfe these arrays store the cost-normalized design p,
+    // constrained by cc * sum(p_arm) + cd * sum(p_pair) = 1.
+    std::fill(w_arm.begin(), w_arm.end(), 1.0 / (cc * active_count));
+    std::fill(w_pair.begin(), w_pair.end(), 1.0 / (cd * active_count));
 
     const int ihat = predicted_best_arm(inst, theta_hat);
 
@@ -462,13 +456,14 @@ static void cost_optimal_proportions_track_stop_flat(
         for (double& w : w_arm) w *= one_minus;
         for (double& w : w_pair) w *= one_minus;
 
-        const double eff_sc = sc_best / std::max(1e-12, cfg.cc);
-        const double eff_sd = sd_best / std::max(1e-12, cfg.cd);
+        const double eff_sc = sc_best / cc;
+        const double eff_sd = sd_best / cd;
 
-        if (eff_sc >= eff_sd) w_arm[i_star] += gamma;
-        else                  w_pair[p_star] += gamma;
+        if (eff_sc >= eff_sd) w_arm[i_star] += gamma / cc;
+        else                  w_pair[p_star] += gamma / cd;
     }
 
+    // Convert p to per-round proportions for the tracking rule.
     double sum = 0.0;
     for (double w : w_arm) sum += w;
     for (double w : w_pair) sum += w;
